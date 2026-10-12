@@ -1,0 +1,483 @@
+<title>НикМастер превью</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: narrow page header + a single phone-sized chat column, messenger look */
+:root {
+  --page: #e7ebf0;
+  --chat: #c9d8c2;
+  --chat-pattern: rgba(70, 110, 60, .10);
+  --surface: #ffffff;
+  --bubble-in: #ffffff;
+  --bubble-out: #e3fbc9;
+  --fg: #111a22;
+  --muted: #6c7883;
+  --accent: #2f87d9;
+  --accent-fg: #ffffff;
+  --kb: rgba(30, 60, 40, .28);
+  --kb-fg: #ffffff;
+  --reply-kb: #f1f3f5;
+  --reply-btn: #ffffff;
+  --code: #1a6fb8;
+  --line: #d6dde3;
+  --toast: rgba(20, 28, 36, .88);
+  --font: "Roboto", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Roboto Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --page: #0e1621; --chat: #0f1a24; --chat-pattern: rgba(120, 170, 220, .05);
+  --surface: #17212b; --bubble-in: #182533; --bubble-out: #2b5278;
+  --fg: #f2f6f9; --muted: #7d8b99; --accent: #5ea9ee; --accent-fg: #0e1621;
+  --kb: rgba(255, 255, 255, .12); --kb-fg: #f2f6f9; --reply-kb: #17212b; --reply-btn: #22303e;
+  --code: #7cc0ff; --line: #24313f; --toast: rgba(240, 244, 248, .92); color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --page: #0e1621; --chat: #0f1a24; --chat-pattern: rgba(120, 170, 220, .05);
+  --surface: #17212b; --bubble-in: #182533; --bubble-out: #2b5278;
+  --fg: #f2f6f9; --muted: #7d8b99; --accent: #5ea9ee; --accent-fg: #0e1621;
+  --kb: rgba(255, 255, 255, .12); --kb-fg: #f2f6f9; --reply-kb: #17212b; --reply-btn: #22303e;
+  --code: #7cc0ff; --line: #24313f; --toast: rgba(240, 244, 248, .92); color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--page); color: var(--fg); font-family: var(--font); font-size: 15px; }
+.wrap { box-sizing: border-box; height: 100%; padding-inline: 16px; padding-block: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.intro { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 4px; }
+.intro h1 { margin: 0; font-size: 18px; font-weight: 700; text-wrap: balance; }
+.intro p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.intro .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.chip { font: 500 13px var(--font); border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.chip:hover { border-color: var(--accent); }
+.chip:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.phone { width: 100%; max-width: 440px; flex: 1; min-height: 0; display: flex; flex-direction: column; border-radius: 18px; overflow: hidden; background: var(--chat); box-shadow: 0 10px 40px rgba(0,0,0,.18); border: 1px solid var(--line); }
+.head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.ava { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(135deg, #8a63e8, #e2588f); color: #fff; font-weight: 700; font-size: 15px; flex: none; }
+.head b { display: block; font-size: 15px; }
+.head small { color: var(--muted); font-size: 13px; }
+.bal { margin-left: auto; font: 500 13px var(--font); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 10px; display: flex; flex-direction: column; gap: 6px;
+  background-color: var(--chat);
+  background-image: radial-gradient(var(--chat-pattern) 1.5px, transparent 1.6px);
+  background-size: 18px 18px; }
+.m { max-width: 86%; display: flex; flex-direction: column; gap: 4px; }
+.m.in { align-self: flex-start; }
+.m.out { align-self: flex-end; }
+.bubble { padding: 7px 11px 8px; border-radius: 14px; line-height: 1.42; white-space: pre-wrap; overflow-wrap: anywhere; box-shadow: 0 1px 1px rgba(0,0,0,.08); }
+.in .bubble { background: var(--bubble-in); border-bottom-left-radius: 4px; }
+.out .bubble { background: var(--bubble-out); border-bottom-right-radius: 4px; }
+.bubble code { font-family: var(--mono); font-size: 14px; color: var(--code); cursor: pointer; border-radius: 4px; }
+.bubble code:hover { background: color-mix(in srgb, var(--code) 14%, transparent); }
+.bubble i { color: var(--muted); }
+.bubble a { color: var(--accent); }
+.ikb { display: flex; flex-direction: column; gap: 4px; }
+.ikb .r { display: flex; gap: 4px; }
+.ikb button { flex: 1; min-width: 0; font: 500 14px var(--font); color: var(--kb-fg); background: var(--kb); border: 0; border-radius: 8px; padding: 9px 8px; cursor: pointer; backdrop-filter: blur(6px); }
+.ikb button:hover { filter: brightness(1.12); }
+.ikb button.url::after { content: " ↗"; opacity: .7; }
+
+.rkb { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; background: var(--reply-kb); border-top: 1px solid var(--line); }
+.rkb button { font: 500 14px var(--font); color: var(--fg); background: var(--reply-btn); border: 1px solid var(--line); border-radius: 8px; padding: 10px 6px; cursor: pointer; }
+.rkb button.wide { grid-column: span 2; }
+.input { display: flex; gap: 8px; padding: 8px; background: var(--surface); border-top: 1px solid var(--line); }
+.input input { flex: 1; min-width: 0; font: 15px var(--font); color: var(--fg); background: transparent; border: 0; padding: 8px 6px; }
+.input input::placeholder { color: var(--muted); }
+.input button { border: 0; background: var(--accent); color: var(--accent-fg); border-radius: 50%; width: 40px; height: 40px; font-size: 18px; cursor: pointer; flex: none; }
+.toggle-kb { background: transparent !important; color: var(--muted) !important; font-size: 20px !important; }
+
+.toast { position: fixed; left: 50%; top: calc(18% + env(safe-area-inset-top, 0px)); transform: translateX(-50%); background: var(--toast); color: var(--page); padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: min(360px, calc(100% - 32px)); text-align: center; z-index: 10; }
+.typing { color: var(--muted); font-size: 13px; padding: 2px 6px; }
+@media (prefers-reduced-motion: no-preference) { .m { animation: pop .18s ease-out; } @keyframes pop { from { transform: translateY(6px); opacity: .4; } } }
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <h1>Предпросмотр бота «НикМастер»</h1>
+    <p>Логика как в коде бота: ники, генератор, кристаллы, бонус, рефералка, обязательная подписка и админка. Нажми на ник в ответе, и он скопируется. Telegram здесь не подключён, поэтому спонсор и рассылка показаны для примера, а @username в превью не проверяются.</p>
+    <div class="row">
+      <button class="chip" id="reset">↺ Начать заново</button>
+      <button class="chip" data-cmd="/admin">/admin</button>
+      <button class="chip" data-cmd="Shadow">Пример: Shadow</button>
+      <button class="chip" data-cmd="/setad 🔥 Реклама: лучший канал про игры @channel">Пример рекламы</button>
+    </div>
+  </div>
+
+  <div class="phone">
+    <div class="head">
+      <div class="ava">НМ</div>
+      <div><b>НикМастер</b><small>бот</small></div>
+      <div class="bal" id="bal"></div>
+    </div>
+    <div class="msgs" id="msgs" aria-live="polite"></div>
+    <div class="rkb" id="rkb" hidden></div>
+    <form class="input" id="form">
+      <button type="button" class="toggle-kb" id="kbtoggle" title="Клавиатура" hidden>⌨︎</button>
+      <input id="text" autocomplete="off" placeholder="Отправь текст — сделаю красивый ник">
+      <button type="submit" aria-label="Отправить">➤</button>
+    </form>
+  </div>
+</div>
+
+<script>
+// ---------- шрифты (порт bot/services/fonts.py) ----------
+const AU = "ABCDEFGHIJKLMNOPQRSTUVWXYZ", AL = "abcdefghijklmnopqrstuvwxyz", DG = "0123456789";
+function offsetMap(up, lo, dg, exc) {
+  const m = {};
+  [...AU].forEach((c, i) => m[c] = String.fromCodePoint(up + i));
+  [...AL].forEach((c, i) => m[c] = String.fromCodePoint(lo + i));
+  if (dg != null) [...DG].forEach((c, i) => m[c] = String.fromCodePoint(dg + i));
+  return Object.assign(m, exc || {});
+}
+function lettersMap(s) {
+  const a = [...s], m = {};
+  [...AL].forEach((c, i) => m[c] = a[i]);
+  [...AU].forEach((c, i) => m[c] = a[i]);
+  return m;
+}
+const FONTS = {
+  "Жирный": offsetMap(0x1D400, 0x1D41A, 0x1D7CE),
+  "Курсив": offsetMap(0x1D434, 0x1D44E, null, { h: "ℎ" }),
+  "Жирный курсив": offsetMap(0x1D468, 0x1D482),
+  "Рукописный": offsetMap(0x1D4D0, 0x1D4EA),
+  "Готика": offsetMap(0x1D56C, 0x1D586),
+  "Двойной": offsetMap(0x1D538, 0x1D552, 0x1D7D8, { C: "ℂ", H: "ℍ", N: "ℕ", P: "ℙ", Q: "ℚ", R: "ℝ", Z: "ℤ" }),
+  "Гротеск": offsetMap(0x1D5D4, 0x1D5EE, 0x1D7EC),
+  "Гротеск курсив": offsetMap(0x1D63C, 0x1D656),
+  "Моно": offsetMap(0x1D670, 0x1D68A, 0x1D7F6),
+  "Широкий": offsetMap(0xFF21, 0xFF41, 0xFF10),
+  "Кружки": offsetMap(0x24B6, 0x24D0),
+  "Квадраты": offsetMap(0x1F130, 0x1F130),
+  "Чёрные квадраты": offsetMap(0x1F170, 0x1F170),
+  "Капитель": lettersMap("ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"),
+};
+const UPSIDE = lettersMap("ɐqɔpǝɟƃɥᴉɾʞlɯuodbɹsʇnʌʍxʎz");
+const COMBINING = { "Зачёркнутый": "̶", "Подчёркнутый": "̲", "Косая черта": "̷", "Двойная черта": "̳", "Искры": "҉" };
+const DECORATIONS = ["꧁༺ {} ༻꧂", "★彡 {} 彡★", "『{}』", "【{}】", "•°•{}•°•", "ıllıllı {} ıllıllı",
+  "▄︻デ{}══━一", "×͜× {} ×͜×", "⚡{}⚡", "♡ {} ♡", "𓆩{}𓆪", "✿ {} ✿", "亗 {} 亗",
+  "メ{}メ", "☾ {} ☽", "⋆｡°✩ {} ✩°｡⋆", "▓▒░ {} ░▒▓", "ꗃ {} ꗃ", "†{}†", "◥꧁{}꧂◤",
+  "𝕏 {} 𝕏", "°•.✦ {} ✦.•°", "─═≡ {} ≡═─", "➳ {} ❥"];
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const sample = (a, n) => [...a].sort(() => Math.random() - .5).slice(0, n);
+const tr = (t, m) => [...t].map(c => m[c] ?? c).join("");
+const hasLatin = t => /[A-Za-z]/.test(t);
+const deco = (t, tpl) => (tpl || pick(DECORATIONS)).replace("{}", t);
+
+function stylize(text) {
+  const out = [], latin = hasLatin(text);
+  if (latin) {
+    for (const n in FONTS) out.push(tr(text, FONTS[n]));
+    out.push([...tr(text, UPSIDE)].reverse().join(""));
+  }
+  for (const n in COMBINING) out.push([...text].map(c => /\s/.test(c) ? c : c + COMBINING[n]).join(""));
+  out.push([...text].join(" "));
+  for (const tpl of sample(DECORATIONS, 12)) {
+    const base = latin && Math.random() < .5 ? tr(text, FONTS[pick(Object.keys(FONTS))]) : text;
+    out.push(deco(base, tpl));
+  }
+  return out;
+}
+function randomStyle(text) {
+  const roll = Math.random();
+  let s = hasLatin(text) && roll < .45 ? tr(text, FONTS[pick(Object.keys(FONTS))]) : text;
+  return roll > .3 ? deco(s) : s;
+}
+
+// ---------- генератор (порт bot/services/nickgen.py) ----------
+const THEMES = {
+  game: { title: "🎮 Игровые",
+    a: ["Dark","Shadow","Ghost","Toxic","Silent","Mad","Frost","Night","Cyber","Iron","Blood","Storm","Neon","Wild","Lucky","Rage","Void","Hyper"],
+    b: ["Sniper","Killer","Wolf","Reaper","Hunter","Ninja","Demon","Viper","Rider","Slayer","Fox","Dragon","Joker","Phantom","Raven","Blade","Titan","King"],
+    p: ["{a}{b}","{a}_{b}","xX{b}Xx","{b}{n}","{a}{b}{n}","i{b}","{b}Pro"] },
+  cute: { title: "🌸 Милые",
+    a: ["Sweet","Little","Baby","Soft","Pink","Honey","Sugar","Tiny","Cozy","Peachy","Sunny","Lovely","Fluffy","Bubble","Candy"],
+    b: ["Bunny","Kitty","Cherry","Mochi","Panda","Peach","Bear","Star","Bun","Cookie","Muffin","Daisy","Berry","Angel","Cloud"],
+    p: ["{a}{b}","{a}_{b}","{b}ie","{l}{b}","{b}{n}","its{b}","{a}{b}xo"] },
+  dark: { title: "🖤 Дерзкие",
+    a: ["Black","Dead","Cold","Lost","Broken","Savage","Evil","Sad","Wicked","Grim","Toxic","Hollow","Crazy","Lonely","Bad"],
+    b: ["Soul","Heart","Boy","Girl","Angel","Devil","Rose","Smoke","Crown","Mask","Moon","Sin","Ghost","Vibe","Queen"],
+    p: ["{a}{b}","{a}_{b}","{l}{a}{b}","{b}666","notyour{b}","{a}.{b}"] },
+  aesthetic: { title: "☁️ Эстетика",
+    a: ["lunar","velvet","misty","dreamy","golden","pastel","silent","ocean","cosmic","faded","hazy","stardust","vintage","moonlit","lavender"],
+    b: ["haze","bloom","petal","wave","glow","aura","dawn","dusk","echo","rain","sky","mist","light","soul","breeze"],
+    p: ["{a}{b}","{a}.{b}","{a}_{b}","{b}{a}","{l}{b}","{a}{b}{s}"] },
+  ru: { title: "🇷🇺 Русские",
+    a: ["Тёмный","Злой","Тихий","Дикий","Ночной","Лунный","Снежный","Безумный","Хитрый","Ледяной","Огненный","Грустный","Добрый","Мятный","Бархатный"],
+    b: ["Волк","Кот","Лис","Призрак","Ворон","Тигр","Демон","Ангел","Барон","Шторм","Ёж","Медведь","Самурай","Дракон","Странник"],
+    p: ["{a} {b}","{a}_{b}","{b}{n}","{a}{b}","Мистер {b}","{b} {a}"] },
+};
+function genNicks(key, count = 8) {
+  const t = THEMES[key], seen = new Set(), res = [];
+  for (let i = 0; i < count * 5 && res.length < count; i++) {
+    const nick = pick(t.p).replace("{a}", pick(t.a)).replace("{b}", pick(t.b))
+      .replace("{n}", pick(["", "7", "13", "69", "77", "99", "228", "666", "777", "2k", String(10 + Math.floor(Math.random() * 90))]))
+      .replace("{l}", pick(["the", "mr", "lil", "im", "x"])).replace("{s}", pick(["", ".", "_", "x"]));
+    if (seen.has(nick)) continue;
+    seen.add(nick); res.push([nick, randomStyle(nick)]);
+  }
+  return res;
+}
+
+// ---------- @username (порт bot/services/usernames.py, без сети) ----------
+const USERNAME_RE = /^[a-zA-Z][a-zA-Z0-9_]{3,30}[a-zA-Z0-9]$/;
+function pronounceable(len) {
+  const startV = Math.random() < .2; let s = "";
+  for (let i = 0; i < len; i++) {
+    const v = (i % 2 === 0) === startV;
+    s += v ? pick([..."aeiou"]) : pick([..."bdfgklmnprstvz" + (Math.random() < .15 ? "cjxy" : "")]);
+  }
+  return s;
+}
+
+// ---------- состояние ----------
+const CONFIG = { startBalance: 2, refReward: 3, dailyBonus: 1, adminId: 1104623094, cost: { 5: 3, 6: 1 } };
+const BTN = { nick: "✨ Красивый ник", gen: "🎲 Генератор ников", un: "💎 Свободные @username",
+  bonus: "🎁 Бонус", friends: "👥 Пригласить друзей", profile: "👤 Профиль" };
+const MENU = Object.values(BTN);
+let S;
+function freshState() {
+  return { balance: 0, refs: 0, passedOp: false, subscribed: false, lastBonus: 0, waiting: null,
+    ad: null, mail: null, created: new Date().toLocaleDateString("ru-RU"), sponsorJoined: 412 };
+}
+
+const $ = id => document.getElementById(id);
+const msgs = $("msgs");
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const code = s => `<code>${esc(s)}</code>`;
+const adFooter = () => S.ad ? `\n\n${S.ad}` : "";
+
+function renderBalance() { $("bal").textContent = S.passedOp ? `${S.balance} 💎` : ""; }
+function scroll() { msgs.scrollTop = msgs.scrollHeight; }
+
+function toast(text) {
+  document.querySelectorAll(".toast").forEach(t => t.remove());
+  const t = document.createElement("div");
+  t.className = "toast"; t.textContent = text; t.setAttribute("role", "status");
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2200);
+}
+
+function kbHtml(kb) {
+  if (!kb) return "";
+  return `<div class="ikb">${kb.map(row => `<div class="r">${row.map(b =>
+    `<button type="button" class="${b.url ? "url" : ""}" data-cb="${esc(b.cb || "")}" data-url="${esc(b.url || "")}">${esc(b.t)}</button>`
+  ).join("")}</div>`).join("")}</div>`;
+}
+function bot(html, kb) {
+  const m = document.createElement("div");
+  m.className = "m in";
+  m.innerHTML = `<div class="bubble">${html}</div>${kbHtml(kb)}`;
+  msgs.appendChild(m); scroll(); renderBalance();
+  return m;
+}
+function edit(m, html, kb) {
+  m.innerHTML = `<div class="bubble">${html}</div>${kbHtml(kb)}`; scroll(); renderBalance();
+}
+function user(text) {
+  const m = document.createElement("div");
+  m.className = "m out";
+  m.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+  msgs.appendChild(m); scroll();
+}
+
+function showMenu(show) {
+  const r = $("rkb");
+  r.hidden = !show; $("kbtoggle").hidden = !show;
+  r.innerHTML = [BTN.nick, BTN.gen, BTN.un, BTN.bonus, BTN.friends, BTN.profile].map(b =>
+    `<button type="button" class="${b === BTN.un || b === BTN.profile ? "wide" : ""}">${b}</button>`).join("");
+}
+
+// ---------- тексты ----------
+const welcome = () =>
+  "👋 Привет, друг!\n\nЯ — <b>НикМастер</b>. Помогу сделать ник, от которого все обалдеют:\n\n" +
+  "✨ <b>Красивый ник</b> — 30+ шрифтов и украшений\n" +
+  "🎲 <b>Генератор ников</b> — идеи для игр, TikTok, Instagram и Telegram\n" +
+  "💎 <b>Свободные @username</b> — найду короткие свободные юзернеймы\n\n" +
+  "👇 Просто отправь мне любой текст — и я сделаю его красивым";
+const GATE = "🔒 <b>Чтобы пользоваться ботом, подпишись на каналы наших спонсоров</b>\n\n" +
+  "Это бесплатно и помогает боту оставаться бесплатным для тебя 💜\nПосле подписки нажми «✅ Я подписался».";
+const gateKb = () => [[{ t: "➕ Канал спонсора (пример)", cb: "sponsor" }], [{ t: "✅ Я подписался", cb: "op_check" }]];
+const themesKb = () => {
+  const items = Object.entries(THEMES).map(([k, t]) => ({ t: t.title, cb: "gen:" + k }));
+  const rows = []; for (let i = 0; i < items.length; i += 2) rows.push(items.slice(i, i + 2)); return rows;
+};
+const unKb = () => [[{ t: `🔍 5 букв — ${CONFIG.cost[5]} 💎`, cb: "un_find:5" }, { t: `🔍 6 букв — ${CONFIG.cost[6]} 💎`, cb: "un_find:6" }],
+  [{ t: "✏️ Проверить свой вариант", cb: "un_check" }]];
+const refLink = `https://t.me/имя_бота?start=r${CONFIG.adminId}`;
+const adminKb = () => [[{ t: "📊 Статистика", cb: "adm:stats" }, { t: "🏆 Топ рефералов", cb: "adm:top" }],
+  [{ t: "📢 Спонсоры (ОП)", cb: "adm:sponsors" }], [{ t: "✉️ Рассылка", cb: "adm:mail" }, { t: "📝 Реклама в выдаче", cb: "adm:ad" }]];
+const backKb = () => [[{ t: "⬅️ Назад", cb: "adm:back" }]];
+const ADMIN_HELP = "🛠 <b>Админ-панель</b>\n\nКоманды:\n<code>/give ID 10</code> — начислить 💎\n" +
+  "<code>/setad текст</code> — реклама под каждой выдачей ников\n<code>/delad</code> — убрать рекламу\n<code>/cancel</code> — отменить текущее действие";
+
+// ---------- обработка сообщений ----------
+function onText(raw) {
+  const text = raw.trim().replace(/\s+/g, " ");
+  if (!text) return;
+  user(text);
+  setTimeout(() => handleText(text), 250);
+}
+
+function handleText(text) {
+  if (text.startsWith("/admin")) { S.waiting = null; return bot(ADMIN_HELP, adminKb()); }
+  if (text === "/cancel") { S.waiting = null; S.mail = null; return bot("Отменено.", adminKb()); }
+  if (text.startsWith("/setad")) {
+    const ad = text.slice(6).trim();
+    if (!ad) return bot("Формат: <code>/setad текст рекламы</code>");
+    S.ad = esc(ad); return bot(`✅ Реклама установлена:\n\n${S.ad}\n\nОтправь любой ник — она появится под результатом.`);
+  }
+  if (text === "/delad") { S.ad = null; return bot("✅ Реклама убрана"); }
+  if (S.waiting === "mail") return mailMessage(text);
+  if (S.waiting === "mail_btn") return mailButton(text);
+
+  if (!S.passedOp) return bot(GATE, gateKb());
+  if (text.startsWith("/start")) { S.waiting = null; showMenu(true); return bot(welcome()); }
+
+  if (MENU.includes(text)) { S.waiting = null; return menu(text); }
+  if (S.waiting === "username") return checkUsername(text);
+  if (text.startsWith("/")) return;
+  if (text.length > 30) return bot("✂️ Слишком длинно — максимум 30 символов.");
+  const tip = hasLatin(text) ? "" : "\n\n💡 Напиши ник латиницей — откроются ещё 15 шрифтов";
+  bot("✨ <b>Твои ники</b> — нажми на любой, чтобы скопировать:\n\n" + stylize(text).map(code).join("\n") + tip + adFooter());
+}
+
+function menu(btn) {
+  if (btn === BTN.nick) return bot("✍️ Отправь мне свой ник или имя (до 30 символов).\n\nЛатиница получит 15+ шрифтов, а украшения работают и с русскими буквами.\nНажми на любой вариант — он скопируется 📋");
+  if (btn === BTN.gen) return bot("🎲 Выбери тему ника:", themesKb());
+  if (btn === BTN.un) return bot("💎 <b>Свободные @username</b>\n\nКороткий юзернейм — как красивый номер: его легко запомнить, а 5-буквенные на аукционе Fragment стоят тысячи долларов. Я найду свободные варианты, которые можно занять прямо сейчас <b>бесплатно</b> в настройках Telegram.\n\n" +
+    `Твой баланс: <b>${S.balance} 💎</b>\nКристаллы дают за друзей и ежедневный бонус.`, unKb());
+  if (btn === BTN.bonus) return bot(claimBonus());
+  if (btn === BTN.friends) return bot("👥 <b>Приглашай друзей — получай кристаллы</b>\n\n" +
+    `За каждого друга, который запустит бота: <b>+${CONFIG.refReward} 💎</b>\nТы пригласил: <b>${S.refs}</b>\n\n` +
+    `Твоя ссылка (нажми, чтобы скопировать):\n${code(refLink)}`,
+    [[{ t: "📤 Отправить друзьям", url: "share" }], [{ t: "🧪 Превью: друг пришёл по ссылке", cb: "demo_ref" }]]);
+  if (btn === BTN.profile) return bot(`👤 <b>Профиль</b>\n\n🆔 ID: ${code(String(CONFIG.adminId))}\n💎 Баланс: <b>${S.balance}</b>\n👥 Друзей приглашено: <b>${S.refs}</b>\n📅 С нами с ${S.created}`);
+}
+
+function claimBonus() {
+  const now = Date.now(), cd = 24 * 3600e3;
+  if (now - S.lastBonus < cd) {
+    const left = cd - (now - S.lastBonus), h = Math.floor(left / 3600e3), m = Math.floor(left % 3600e3 / 60e3);
+    return `⏳ Бонус уже получен. Следующий через ${h} ч ${m} мин.`;
+  }
+  S.lastBonus = now; S.balance += CONFIG.dailyBonus;
+  return `🎁 +${CONFIG.dailyBonus} 💎! Возвращайся завтра за новым бонусом.`;
+}
+
+function checkUsername(text) {
+  const name = text.replace(/^@/, "").replace(/^https:\/\/t\.me\//, "");
+  if (!USERNAME_RE.test(name)) return bot("⚠️ Юзернейм — от 5 до 32 символов: латиница, цифры и «_», начинается с буквы. Попробуй ещё раз:");
+  S.waiting = null;
+  bot(`🔎 Формат ${code(name)} подходит.\n\n<i>В превью нет доступа к t.me, поэтому занятость не проверяется. Настоящий бот ответит «✅ скорее всего свободен» или «❌ уже занят».</i>`, unKb());
+}
+
+// ---------- кнопки ----------
+function onCallback(cb, msgEl) {
+  if (cb === "sponsor") { S.subscribed = true; return toast("Превью: считаем, что ты подписался на канал спонсора"); }
+  if (cb === "op_check") {
+    if (!S.subscribed) return toast("❌ Ты подписался не на все каналы");
+    toast("✅ Спасибо за подписку!");
+    msgEl.remove();
+    if (!S.passedOp) { S.passedOp = true; S.balance += CONFIG.startBalance; }
+    showMenu(true);
+    return bot(welcome());
+  }
+  if (!S.passedOp && !cb.startsWith("adm:")) return bot(GATE, gateKb());
+
+  if (cb === "gen_themes") return edit(msgEl, "🎲 Выбери тему ника:", themesKb());
+  if (cb.startsWith("gen:")) {
+    const key = cb.slice(4), t = THEMES[key];
+    const lines = genNicks(key).map(([p, s]) => `• ${code(s)}\n   <i>${esc(p)}</i>`).join("\n");
+    return edit(msgEl, `${t.title} — нажми, чтобы скопировать:\n\n${lines}\n\n💡 Понравился ник? Отправь его мне — покажу в 30+ стилях${adFooter()}`,
+      [[{ t: "🔄 Ещё", cb }, { t: "📂 Темы", cb: "gen_themes" }]]);
+  }
+  if (cb.startsWith("un_find:")) {
+    const len = +cb.split(":")[1], cost = CONFIG.cost[len];
+    if (S.balance < cost) return bot(`😔 Нужно ${cost} 💎 — у тебя не хватает.\n\nПригласи друга по своей ссылке или забери ежедневный бонус 👇`,
+      [[{ t: "👥 Пригласить друга", url: "share" }], [{ t: "🎁 Забрать бонус", cb: "bonus" }]]);
+    S.balance -= cost;
+    const status = bot(`🔍 Ищу свободные юзернеймы из ${len} букв…`);
+    const names = new Set(); while (names.size < 5) names.add(pronounceable(len));
+    setTimeout(() => edit(status,
+      `🎉 <b>Скорее всего свободны</b> (−${cost} 💎):\n\n${[...names].map(n => "• " + code(n)).join("\n")}\n\nКак занять: Настройки → Имя пользователя → вставь вариант.\n⚡ Поторопись — их могут занять другие!\n\n<i>Превью: варианты сгенерированы, но не проверены. Настоящий бот проверяет каждый через t.me и показывает только свободные.</i>`,
+      unKb()), 900);
+    return;
+  }
+  if (cb === "un_check") { S.waiting = "username"; return bot("✏️ Отправь юзернейм, который хочешь проверить (без @):"); }
+  if (cb === "bonus") return toast(claimBonus());
+  if (cb === "demo_ref") {
+    S.refs++; S.balance += CONFIG.refReward;
+    return bot(`🎉 По твоей ссылке пришёл <b>Дима</b>! +${CONFIG.refReward} 💎`);
+  }
+
+  // админка (данные — пример)
+  if (cb === "adm:back") { S.waiting = null; return edit(msgEl, ADMIN_HELP, adminKb()); }
+  if (cb === "adm:stats") return edit(msgEl,
+    "📊 <b>Статистика</b> <i>(пример данных)</i>\n\n👥 Всего пользователей: <b>12 480</b>\n💚 Живых (не заблокировали бота): <b>10 913</b>\n" +
+    "✅ Прошли ОП: <b>11 207</b>\n🔗 Пришли по рефссылкам: <b>7 342</b>\n\n🆕 Сегодня: <b>536</b> · 24ч: <b>871</b> · 7 дней: <b>4 209</b>\n\n" +
+    `📢 <b>Спонсоры (привёл / заказ):</b>\n🟢 Канал спонсора: ${S.sponsorJoined}/1000`, backKb());
+  if (cb === "adm:top") return edit(msgEl, "🏆 <b>Топ рефералов</b> <i>(пример данных)</i>\n\n1. Аня @anya_k — 214\n2. Миша — 187\n3. Lera @lerrra — 96", backKb());
+  if (cb === "adm:sponsors") return edit(msgEl,
+    `📢 <b>Спонсоры обязательной подписки</b>\n\n🟢 <b>Канал спонсора</b> — ${S.sponsorJoined}/1000\n   https://t.me/+invite_link\n\n` +
+    "Нажми на спонсора — вкл/выкл, 🗑 — удалить.\nЗасчитываются только те, кто подписался <b>через бота</b>. При выполнении заказа спонсор отключается сам.",
+    [[{ t: "🟢 Канал спонсора", cb: "adm:noop" }, { t: "🗑", cb: "adm:noop" }], [{ t: "➕ Добавить спонсора", cb: "adm:sp_add" }], [{ t: "⬅️ Назад", cb: "adm:back" }]]);
+  if (cb === "adm:sp_add") return bot("1️⃣ Сначала <b>добавь бота админом</b> в канал спонсора (достаточно права «Добавлять участников»).\n\nПотом перешли сюда любой пост из канала, или пришли его @username или ID (<code>-100…</code>).\n\n<i>В превью добавление не работает: нужен настоящий Telegram.</i>");
+  if (cb === "adm:noop") return toast("В превью спонсор только для примера");
+  if (cb === "adm:ad") return edit(msgEl,
+    "📝 <b>Реклама в выдаче</b>\n\nЭтот текст показывается под каждым результатом (ники, генератор). Продавай это место рекламодателям отдельно от ОП.\n\n" +
+    "Установить: <code>/setad 🔥 Лучший канал про игры — @channel</code>\nУбрать: <code>/delad</code>\n\nСейчас: " + (S.ad || "не задана"), backKb());
+  if (cb === "adm:mail") { S.waiting = "mail"; return bot("✉️ Пришли сообщение для рассылки — текст, фото, видео, что угодно. Оно уйдёт всем пользователям как есть.\n\n/cancel — отмена"); }
+  if (cb === "adm:mail_cancel") { S.mail = null; return edit(msgEl, "✖️ Рассылка отменена"); }
+  if (cb === "adm:mail_go") {
+    S.mail = null;
+    edit(msgEl, "🚀 Рассылка запущена, пришлю отчёт по завершении.");
+    return setTimeout(() => bot("✅ Рассылка завершена <i>(превью: никому не отправлено, цифры — пример)</i>\n\nДоставлено: <b>10 874</b>\nЗаблокировали бота: <b>39</b>\nОшибки: <b>0</b>"), 1200);
+  }
+}
+
+function mailMessage(text) {
+  S.mail = { text, button: null }; S.waiting = "mail_btn";
+  bot("Добавить кнопку-ссылку? Пришли в формате:\n<code>Текст кнопки | https://t.me/channel</code>\n\nили «-», чтобы без кнопки.");
+}
+function mailButton(text) {
+  if (text !== "-") {
+    const parts = text.split("|").map(s => s.trim());
+    if (parts.length !== 2 || !/^(https?|tg):\/\//.test(parts[1])) return bot("Формат: <code>Текст | https://ссылка</code> или «-»");
+    S.mail.button = parts;
+  }
+  S.waiting = null;
+  bot("👀 Так увидят пользователи:");
+  bot(esc(S.mail.text), S.mail.button ? [[{ t: S.mail.button[0], url: S.mail.button[1] }]] : null);
+  bot("Отправляем?", [[{ t: "🚀 Отправить всем", cb: "adm:mail_go" }, { t: "✖️ Отмена", cb: "adm:mail_cancel" }]]);
+}
+
+// ---------- события ----------
+msgs.addEventListener("click", e => {
+  const c = e.target.closest("code");
+  if (c) {
+    const t = c.textContent;
+    const done = () => toast("📋 Скопировано: " + t);
+    try { navigator.clipboard.writeText(t).then(done, () => { selectText(c); toast("Выделено — скопируй вручную"); }); }
+    catch { selectText(c); toast("Выделено — скопируй вручную"); }
+    return;
+  }
+  const b = e.target.closest(".ikb button");
+  if (!b) return;
+  if (b.dataset.url) return toast(b.dataset.url === "share" ? "В боте откроется выбор чата, чтобы отправить ссылку другу" : "Откроется ссылка: " + b.dataset.url);
+  onCallback(b.dataset.cb, b.closest(".m"));
+});
+function selectText(el) { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+$("rkb").addEventListener("click", e => { const b = e.target.closest("button"); if (b) onText(b.textContent); });
+$("kbtoggle").addEventListener("click", () => { $("rkb").hidden = !$("rkb").hidden; });
+$("form").addEventListener("submit", e => { e.preventDefault(); const v = $("text").value; $("text").value = ""; onText(v); });
+document.querySelectorAll("[data-cmd]").forEach(b => b.addEventListener("click", () => onText(b.dataset.cmd)));
+$("reset").addEventListener("click", start);
+
+function start() {
+  S = freshState();
+  msgs.innerHTML = ""; showMenu(false); renderBalance();
+  user("/start");
+  bot(GATE, gateKb());
+}
+start();
+</script>
