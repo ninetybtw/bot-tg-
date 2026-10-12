@@ -17,6 +17,18 @@ from bot.web import create_app, send_outbox
 
 log = logging.getLogger("bot")
 
+DESCRIPTION = (
+    "📱 Крути красивые номера телефонов!\n\n"
+    "Выбивай «блатные» узоры: 777-77-77, лесенки, зеркала, палиндромы. "
+    "Номера России, Казахстана, Беларуси и ОАЭ.\n\n"
+    "⚡ 3 бесплатных спина на старте\n"
+    "🎁 Подарок и колесо каждый день\n"
+    "🏪 Рынок, «5 в 1» и апгрейдер\n"
+    "🏆 Рейтинг среди друзей\n\n"
+    "Все номера игровые. Жми «Старт» 👇"
+)
+SHORT_DESCRIPTION = "Крутилка красивых номеров: 777-77-77, лесенки, зеркала. Собирай коллекцию и обгоняй друзей"
+
 
 async def reminders(bot: Bot, game: Game) -> None:
     """«Спин готов»: не чаще 2 уведомлений в сутки и не ночью (правила в Game.notify)."""
@@ -46,6 +58,8 @@ async def main() -> None:
         BotCommand(command="terms", description="Условия"),
         BotCommand(command="paysupport", description="Помощь с оплатой"),
     ])
+    await bot.set_my_description(description=DESCRIPTION)
+    await bot.set_my_short_description(short_description=SHORT_DESCRIPTION)
     if config.webapp_url.startswith("https://"):
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(text="Играть", web_app=WebAppInfo(url=config.webapp_url)))
