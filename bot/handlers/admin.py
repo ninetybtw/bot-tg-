@@ -9,7 +9,8 @@ from aiogram.exceptions import (TelegramAPIError, TelegramBadRequest, TelegramFo
 from aiogram.filters import BaseFilter, Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, TelegramObject
+from aiogram.types import (BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, TelegramObject,
+                           WebAppInfo)
 
 from bot.config import Config
 from bot.game.service import Game, GameError
@@ -37,15 +38,29 @@ class Mailing(StatesGroup):
 
 HELP = (
     "🛠 <b>Админка</b>\n\n"
-    "/stats — статистика и экономика\n"
+    "/stats — игроки, спины, приток и слив по причинам, Stars\n"
     "/broadcast — рассылка всем игрокам\n"
-    "/give ID монеты [попытки] — начислить\n"
+    "/give ID рубли [попытки] — начислить\n"
     "/reply ID текст — ответить игроку\n"
     "/refund ID_чека — вернуть звёзды и снять неиспользованное\n"
-    "/config — текущие переопределения экономики (JSON)\n"
-    "/setconfig {json} — изменить шансы, цены, награды без выкладки кода\n"
+    "/raffle — провести розыгрыш дня сейчас\n"
+    "/config — текущий конфиг экономики файлом\n"
+    "/setconfig {json} — новая версия конфига (проверка: шансы 100%, возврат 78–82%)\n"
     "/cancel — отменить действие"
 )
+
+REASONS = {
+    "start": "старт", "spin_common": "Обычная", "spin_rare": "Редкая", "spin_epic": "Эпическая",
+    "spin_legendary": "Легендарная", "spin_elite": "Элитная", "sell": "продажа системе", "sell_undo": "отмена продажи",
+    "wheel_daily": "колесо дня", "wheel_weekly": "колесо недели", "gift": "подарок дня", "task": "задания",
+    "task_weekly": "задание недели", "referral": "рефералы", "upgrade": "улучшение", "upgrade_parts": "запчасти",
+    "market_buy": "рынок: покупки", "market_sale": "рынок: продажи", "market_fee": "комиссия рынка",
+    "raffle": "розыгрыш", "overflow_sold": "переполнение", "admin": "админ",
+}
+
+
+def rub(cents: int) -> str:
+    return f"{cents // 100:,}".replace(",", " ") + " ₽"
 
 
 @router.message(Command("admin"))
@@ -63,18 +78,22 @@ async def cancel(message: Message, state: FSMContext) -> None:
 @router.message(Command("stats"))
 async def stats(message: Message, game: Game) -> None:
     s = await game.admin_stats()
-    drops = ", ".join(f"{TIERS[r['tier']].icon}{r['n']}" for r in s["top_drops"]) or "—"
+    drops = ", ".join(f"{TIERS[r['tier']].icon}{r['n']}" for r in s["drops_by_tier"]) or "—"
+    reasons = "\n".join(f"  {REASONS.get(r['reason'], r['reason'])}: {'+' if r['cents'] > 0 else ''}{rub(r['cents'])}"
+                        for r in s["reasons"]) or "  —"
+    editions = ", ".join(f"{TIERS[r['tier']].icon} осталось {r['left_n']} из {r['size']}" for r in s["editions_low"])
     await message.answer(
-        "📊 <b>Статистика</b>\n\n"
-        f"👥 Игроков: <b>{s['users']}</b> (живых {s['alive']})\n"
-        f"🆕 Новых сегодня: <b>{s['new_today']}</b> · активных сегодня: <b>{s['dau']}</b>\n"
-        f"🤝 Засчитанных рефералов: <b>{s['referrals']}</b>\n\n"
-        f"🎰 Спинов сегодня: <b>{s['spins_today']}</b>\n"
-        f"Дропы сегодня по ступеням: {drops}\n\n"
-        f"🪙 Монет у игроков: <b>{s['coins_total']}</b>\n"
-        f"Сегодня выдано: {s['coins_in_today']} · слито: {s['coins_out_today']}\n\n"
-        f"⭐ Stars за месяц: <b>{s['stars_month']}</b> · всего: <b>{s['stars_total']}</b>\n"
-        f"≈ {round(s['stars_month'] * 0.013 * 85, 0):.0f} ₽ за месяц до комиссий вывода"
+        "📊 <b>Статистика за сегодня</b>\n\n"
+        f"👥 Игроков: <b>{s['users']}</b> (живых {s['alive']}) · новых {s['new_today']} · активных {s['dau']}\n"
+        f"🤝 Засчитанных рефералов: {s['referrals']}\n"
+        f"🎰 Спинов: <b>{s['spins_today']}</b> · дропы: {drops}\n\n"
+        f"💰 Баланс у игроков: {rub(s['balance_total_cents'])}\n"
+        f"Приток на активного игрока: <b>{rub(s['inflow_per_active_cents'])}</b> "
+        f"(цель — не больше 5 платных спинов, 5 000 ₽)\n"
+        f"Движение по причинам:\n{reasons}\n\n"
+        f"🏷 Выпущенные тиражи: {editions or '—'}\n"
+        f"⭐ Stars за месяц: <b>{s['stars_month']}</b> · всего {s['stars_total']} "
+        f"(≈ {round(s['stars_month'] * 0.013 * 85):,} ₽ до комиссий)".replace(",", " ")
     )
 
 
@@ -82,16 +101,16 @@ async def stats(message: Message, game: Game) -> None:
 async def give(message: Message, command: CommandObject, game: Game) -> None:
     args = (command.args or "").split()
     try:
-        uid, coins = int(args[0]), int(args[1])
-        spins = int(args[2]) if len(args) > 2 else 0
+        uid, rubles = int(args[0]), int(args[1])
+        attempts = int(args[2]) if len(args) > 2 else 0
     except (IndexError, ValueError):
-        await message.answer("Формат: <code>/give ID монеты [попытки]</code>")
+        await message.answer("Формат: <code>/give ID рубли [попытки]</code>")
         return
     async with game.db.tx():
         if not await game.db.one("SELECT 1 FROM users WHERE id = ?", uid):
             await message.answer("Игрок не найден")
             return
-        await game._add(uid, coins, spins, "admin")
+        await game._add(uid, rubles * 100, attempts, "admin")
     await message.answer("✅ Начислено")
 
 
@@ -124,14 +143,24 @@ async def refund(message: Message, command: CommandObject, bot: Bot, game: Game)
     await message.answer(f"✅ Возвращено {result['stars']} ⭐ игроку <code>{result['user_id']}</code>")
 
 
+@router.message(Command("raffle"))
+async def raffle_now(message: Message, game: Game) -> None:
+    res = await game.raffle_draw()
+    if not res:
+        await message.answer("Сегодняшний розыгрыш уже проведён.")
+        return
+    lines = "\n".join(f"{w['place']}. {html.escape(w['name'])} — {html.escape(w['prize'])}" for w in res["winners"])
+    await message.answer(f"🎟 Розыгрыш {res['day']}\n\n{lines or 'Билетов не было'}")
+
+
 @router.message(Command("config"))
 async def show_config(message: Message, game: Game) -> None:
     raw = await game.db.get_setting("game_config") or "{}"
+    full = json.dumps(game.cfg, ensure_ascii=False, indent=2, default=str)
     await message.answer_document(
-        BufferedInputFile(json.dumps(game.cfg, ensure_ascii=False, indent=2).encode(), "game_config_full.json"),
+        BufferedInputFile(full.encode(), "game_config_full.json"),
         caption=f"Переопределения сейчас:\n<code>{html.escape(raw[:800])}</code>\n\n"
-                "В файле полный действующий конфиг. Изменить: /setconfig {json} — "
-                "передавай только нужные ключи, остальное возьмётся по умолчанию.")
+                "Изменить: /setconfig {json}. Передавай только нужные ключи, остальное возьмётся по умолчанию.")
 
 
 @router.message(Command("setconfig"))
@@ -141,13 +170,15 @@ async def set_config(message: Message, command: CommandObject, game: Game) -> No
         if not isinstance(override, dict):
             raise ValueError
     except ValueError:
-        await message.answer("Нужен JSON-объект, например: <code>/setconfig {\"start_coins\": 300}</code>")
+        await message.answer("Нужен JSON-объект, например: <code>/setconfig {\"start_cents\": 300000}</code>")
         return
-    if "odds_version" not in override:
-        override["odds_version"] = game.cfg["odds_version"] + 1  # у каждой версии шансов своя дата
-    await game.db.set_setting("game_config", json.dumps(override, ensure_ascii=False))
-    await game.load_config()
-    await message.answer(f"✅ Конфиг обновлён, версия шансов {game.cfg['odds_version']}")
+    override.setdefault("odds_version", game.cfg["odds_version"] + 1)
+    errors = await game.save_config(override)
+    if errors:
+        await message.answer("❌ Конфиг не сохранён:\n" + "\n".join(f"• {html.escape(e)}" for e in errors))
+        return
+    await message.answer(f"✅ Конфиг сохранён, версия шансов {game.cfg['odds_version']}. "
+                         "Не забудь объявить изменение шансов в канале за 24 часа.")
 
 
 # ---------- рассылка ----------
@@ -190,7 +221,6 @@ async def mail_go(message: Message, state: FSMContext, bot: Bot, game: Game, con
 
 
 def _play_markup(config: Config) -> InlineKeyboardMarkup:
-    from aiogram.types import WebAppInfo
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="📱 Играть", web_app=WebAppInfo(url=config.webapp_url))]])
 

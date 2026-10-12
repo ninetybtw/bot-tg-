@@ -52,15 +52,25 @@ DESCRIPTION = (
 SHORT_DESCRIPTION = "Крутилка красивых номеров: 777-77-77, лесенки, зеркала. Собирай коллекцию и обгоняй друзей"
 
 
-async def reminders(bot: Bot, game: Game) -> None:
-    """«Спин готов»: не чаще 2 уведомлений в сутки и не ночью (правила в Game.notify)."""
+async def background(bot: Bot, game: Game) -> None:
+    """Фоновые задачи: «спин готов» (не чаще 2 уведомлений в сутки и не ночью), переполнение старше
+    48 часов продаётся по 60%, розыгрыш дня в 20:00 по Москве."""
+    from datetime import datetime
+
+    from bot.game.service import MSK
+    tick = 0
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(60)
+        tick += 1
         try:
-            await game.energy_reminders()
+            if datetime.now(MSK).hour >= game.cfg["raffle"]["hour_msk"]:
+                await game.raffle_draw()
+            if tick % 5 == 0:
+                await game.energy_reminders()
+                await game.overflow_expire()
             await send_outbox(bot, game)
         except Exception:
-            log.exception("reminders failed")
+            log.exception("background task failed")
 
 
 async def main() -> None:
@@ -94,7 +104,7 @@ async def main() -> None:
     await web.TCPSite(runner, config.web_host, config.web_port).start()
     log.info("Мини-приложение слушает http://%s:%s", config.web_host, config.web_port)
 
-    reminder_task = asyncio.create_task(reminders(bot, game))
+    reminder_task = asyncio.create_task(background(bot, game))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
