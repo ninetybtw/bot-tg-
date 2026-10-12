@@ -1,13 +1,17 @@
 import asyncio
 import contextlib
 import logging
+import os
+import ssl
 
 from aiogram import Bot, Dispatcher
+from aiogram.__meta__ import __version__ as aiogram_version
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
-from aiohttp import web
+from aiohttp import ClientSession, web
 
 from bot.config import load_config
 from bot.db import Database
@@ -16,6 +20,24 @@ from bot.handlers import setup_routers
 from bot.web import create_app, send_outbox
 
 log = logging.getLogger("bot")
+
+
+class EnvProxySession(AiohttpSession):
+    """Для серверов, где интернет только через прокси: берёт HTTPS_PROXY и SSL_CERT_FILE из окружения."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        if os.getenv("SSL_CERT_FILE"):
+            self._connector_init["ssl"] = ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+
+    async def create_session(self) -> ClientSession:
+        if self._should_reset_connector:
+            await self.close()
+        if self._session is None or self._session.closed:
+            self._session = ClientSession(connector=self._connector_type(**self._connector_init), trust_env=True,
+                                          headers={"User-Agent": f"aiogram/{aiogram_version}"})
+            self._should_reset_connector = False
+        return self._session
 
 DESCRIPTION = (
     "📱 Крути красивые номера телефонов!\n\n"
@@ -49,7 +71,8 @@ async def main() -> None:
     game = Game(db, stars_enabled=config.stars_enabled)
     await game.load_config()
 
-    bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    session = EnvProxySession() if os.getenv("HTTPS_PROXY") else None
+    bot = Bot(config.bot_token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage(), game=game, config=config)
     dp.include_router(setup_routers())
 
