@@ -1,26 +1,22 @@
 import asyncio
 import html
+import json
 import logging
-import re
 
 from aiogram import Bot, F, Router
-from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import (TelegramAPIError, TelegramBadRequest, TelegramForbiddenError,
                                 TelegramRetryAfter)
 from aiogram.filters import BaseFilter, Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import (CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-                           Message, MessageOriginChannel, TelegramObject)
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, TelegramObject
 
 from bot.config import Config
-from bot.db import Database
-from bot.keyboards import admin_kb, back_kb, confirm_mail_kb, sponsors_kb
-from bot.utils import AD_KEY
+from bot.game.service import Game, GameError
+from bot.game.tiers import TIERS
 
 log = logging.getLogger(__name__)
 router = Router(name="admin")
-
 _tasks: set[asyncio.Task] = set()
 
 
@@ -33,323 +29,177 @@ router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
 
-class SponsorAdd(StatesGroup):
-    chat = State()
-    url = State()
-    target = State()
-
-
 class Mailing(StatesGroup):
     message = State()
     button = State()
+    confirm = State()
 
 
-# ---------- панель ----------
-
-ADMIN_HELP = (
-    "🛠 <b>Админ-панель</b>\n\n"
-    "Команды:\n"
-    "<code>/give ID 10</code> — начислить 💎\n"
-    "<code>/setad текст</code> — реклама под каждой выдачей ников\n"
-    "<code>/delad</code> — убрать рекламу\n"
-    "<code>/cancel</code> — отменить текущее действие"
+HELP = (
+    "🛠 <b>Админка</b>\n\n"
+    "/stats — статистика и экономика\n"
+    "/broadcast — рассылка всем игрокам\n"
+    "/give ID монеты [попытки] — начислить\n"
+    "/reply ID текст — ответить игроку\n"
+    "/refund ID_чека — вернуть звёзды и снять неиспользованное\n"
+    "/config — текущие переопределения экономики (JSON)\n"
+    "/setconfig {json} — изменить шансы, цены, награды без выкладки кода\n"
+    "/cancel — отменить действие"
 )
 
 
 @router.message(Command("admin"))
-async def admin_panel(message: Message, state: FSMContext) -> None:
+async def admin(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(ADMIN_HELP, reply_markup=admin_kb())
-
-
-@router.callback_query(F.data == "adm:back")
-async def admin_back(call: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await call.answer()
-    await call.message.edit_text(ADMIN_HELP, reply_markup=admin_kb())
+    await message.answer(HELP)
 
 
 @router.message(Command("cancel"))
 async def cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Отменено.", reply_markup=admin_kb())
+    await message.answer("Отменено.")
 
 
-@router.callback_query(F.data == "adm:stats")
-async def admin_stats(call: CallbackQuery, db: Database) -> None:
-    s = await db.stats()
-    sponsors = await db.get_sponsors()
-    sp_lines = "\n".join(
-        f"{'🟢' if sp['active'] else '⏸'} {html.escape(sp['title'])}: "
-        f"{sp['joined']}/{sp['target'] or '∞'}"
-        for sp in sponsors
-    ) or "нет"
-    await call.answer()
-    await call.message.edit_text(
+@router.message(Command("stats"))
+async def stats(message: Message, game: Game) -> None:
+    s = await game.admin_stats()
+    drops = ", ".join(f"{TIERS[r['tier']].icon}{r['n']}" for r in s["top_drops"]) or "—"
+    await message.answer(
         "📊 <b>Статистика</b>\n\n"
-        f"👥 Всего пользователей: <b>{s['total']}</b>\n"
-        f"💚 Живых (не заблокировали бота): <b>{s['alive']}</b>\n"
-        f"✅ Прошли ОП: <b>{s['passed_op']}</b>\n"
-        f"🔗 Пришли по рефссылкам: <b>{s['from_refs']}</b>\n\n"
-        f"🆕 Сегодня: <b>{s['today']}</b> · 24ч: <b>{s['day']}</b> · 7 дней: <b>{s['week']}</b>\n\n"
-        f"📢 <b>Спонсоры (привёл / заказ):</b>\n{sp_lines}",
-        reply_markup=back_kb(),
-    )
-
-
-@router.callback_query(F.data == "adm:top")
-async def admin_top(call: CallbackQuery, db: Database) -> None:
-    rows = await db.top_referrers()
-    lines = [
-        f"{i}. {html.escape(r['first_name'] or '—')} "
-        f"{'@' + r['username'] if r['username'] else ''} (<code>{r['id']}</code>) — {r['ref_count']}"
-        for i, r in enumerate(rows, 1)
-    ]
-    await call.answer()
-    await call.message.edit_text(
-        "🏆 <b>Топ рефералов</b>\n\n" + ("\n".join(lines) or "пока пусто"),
-        reply_markup=back_kb(),
+        f"👥 Игроков: <b>{s['users']}</b> (живых {s['alive']})\n"
+        f"🆕 Новых сегодня: <b>{s['new_today']}</b> · активных сегодня: <b>{s['dau']}</b>\n"
+        f"🤝 Засчитанных рефералов: <b>{s['referrals']}</b>\n\n"
+        f"🎰 Спинов сегодня: <b>{s['spins_today']}</b>\n"
+        f"Дропы сегодня по ступеням: {drops}\n\n"
+        f"🪙 Монет у игроков: <b>{s['coins_total']}</b>\n"
+        f"Сегодня выдано: {s['coins_in_today']} · слито: {s['coins_out_today']}\n\n"
+        f"⭐ Stars за месяц: <b>{s['stars_month']}</b> · всего: <b>{s['stars_total']}</b>\n"
+        f"≈ {round(s['stars_month'] * 0.013 * 85, 0):.0f} ₽ за месяц до комиссий вывода"
     )
 
 
 @router.message(Command("give"))
-async def give(message: Message, command: CommandObject, db: Database) -> None:
+async def give(message: Message, command: CommandObject, game: Game) -> None:
     args = (command.args or "").split()
-    if len(args) != 2 or not args[0].isdigit() or not re.fullmatch(r"-?\d+", args[1]):
-        await message.answer("Формат: <code>/give ID количество</code>")
-        return
-    ok = await db.add_balance(int(args[0]), int(args[1]))
-    await message.answer("✅ Готово" if ok else "❌ Пользователь не найден")
-
-
-# ---------- реклама в выдаче ----------
-
-@router.callback_query(F.data == "adm:ad")
-async def ad_info(call: CallbackQuery, db: Database) -> None:
-    ad = await db.get_setting(AD_KEY)
-    await call.answer()
-    await call.message.edit_text(
-        "📝 <b>Реклама в выдаче</b>\n\n"
-        "Этот текст показывается под каждым результатом (ники, генератор). "
-        "Продавай это место рекламодателям отдельно от ОП.\n\n"
-        "Установить: <code>/setad 🔥 Лучший канал про игры — @channel</code>\n"
-        "Убрать: <code>/delad</code>\n\n"
-        f"Сейчас: {ad or 'не задана'}",
-        reply_markup=back_kb(),
-        disable_web_page_preview=True,
-    )
-
-
-@router.message(Command("setad"))
-async def set_ad(message: Message, command: CommandObject, db: Database) -> None:
-    if not command.args:
-        await message.answer("Формат: <code>/setad текст рекламы</code>")
-        return
-    # html_text сохраняет форматирование и ссылки из сообщения
-    text = message.html_text.split(maxsplit=1)[1]
-    await db.set_setting(AD_KEY, text)
-    await message.answer(f"✅ Реклама установлена:\n\n{text}", disable_web_page_preview=True)
-
-
-@router.message(Command("delad"))
-async def del_ad(message: Message, db: Database) -> None:
-    await db.set_setting(AD_KEY, None)
-    await message.answer("✅ Реклама убрана")
-
-
-# ---------- спонсоры (ОП) ----------
-
-async def _sponsors_text(db: Database) -> tuple[str, list]:
-    sponsors = await db.get_sponsors()
-    lines = [
-        f"{'🟢' if s['active'] else '⏸'} <b>{html.escape(s['title'])}</b> — "
-        f"{s['joined']}/{s['target'] or '∞'}\n   {html.escape(s['url'])}"
-        for s in sponsors
-    ]
-    text = (
-        "📢 <b>Спонсоры обязательной подписки</b>\n\n"
-        + ("\n".join(lines) if lines else "Пока нет ни одного.")
-        + "\n\nНажми на спонсора — вкл/выкл, 🗑 — удалить.\n"
-        "Засчитываются только те, кто подписался <b>через бота</b>. "
-        "При выполнении заказа спонсор отключается сам."
-    )
-    return text, sponsors
-
-
-@router.callback_query(F.data == "adm:sponsors")
-async def sponsors_list(call: CallbackQuery, db: Database) -> None:
-    text, sponsors = await _sponsors_text(db)
-    await call.answer()
-    await call.message.edit_text(text, reply_markup=sponsors_kb(sponsors),
-                                 disable_web_page_preview=True)
-
-
-@router.callback_query(F.data.startswith("adm:sp_toggle:") | F.data.startswith("adm:sp_del:"))
-async def sponsor_action(call: CallbackQuery, db: Database) -> None:
-    _, action, sid = call.data.split(":")
-    if action == "sp_toggle":
-        await db.toggle_sponsor(int(sid))
-    else:
-        await db.delete_sponsor(int(sid))
-    text, sponsors = await _sponsors_text(db)
-    await call.answer("Готово")
-    await call.message.edit_text(text, reply_markup=sponsors_kb(sponsors),
-                                 disable_web_page_preview=True)
-
-
-@router.callback_query(F.data == "adm:sp_add")
-async def sponsor_add_start(call: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(SponsorAdd.chat)
-    await call.answer()
-    await call.message.answer(
-        "1️⃣ Сначала <b>добавь бота админом</b> в канал спонсора "
-        "(достаточно права «Добавлять участников»).\n\n"
-        "Потом перешли сюда любой пост из канала, или пришли его @username или ID "
-        "(<code>-100…</code>).\n\n/cancel — отмена"
-    )
-
-
-@router.message(SponsorAdd.chat)
-async def sponsor_add_chat(message: Message, state: FSMContext, bot: Bot) -> None:
-    if isinstance(message.forward_origin, MessageOriginChannel):
-        ref: int | str = message.forward_origin.chat.id
-    elif message.text and re.fullmatch(r"-?\d+", message.text.strip()):
-        ref = int(message.text.strip())
-    elif message.text:
-        ref = "@" + message.text.strip().lstrip("@").removeprefix("https://t.me/")
-    else:
-        await message.answer("Перешли пост из канала или пришли @username / ID.")
-        return
-
     try:
-        chat = await bot.get_chat(ref)
-        me = await bot.get_chat_member(chat.id, bot.id)
+        uid, coins = int(args[0]), int(args[1])
+        spins = int(args[2]) if len(args) > 2 else 0
+    except (IndexError, ValueError):
+        await message.answer("Формат: <code>/give ID монеты [попытки]</code>")
+        return
+    async with game.db.tx():
+        if not await game.db.one("SELECT 1 FROM users WHERE id = ?", uid):
+            await message.answer("Игрок не найден")
+            return
+        await game._add(uid, coins, spins, "admin")
+    await message.answer("✅ Начислено")
+
+
+@router.message(Command("reply"))
+async def reply(message: Message, command: CommandObject, bot: Bot) -> None:
+    parts = (command.args or "").split(maxsplit=1)
+    if len(parts) != 2 or not parts[0].isdigit():
+        await message.answer("Формат: <code>/reply ID текст</code>")
+        return
+    try:
+        await bot.send_message(int(parts[0]), f"💬 Поддержка:\n\n{html.escape(parts[1])}")
+        await message.answer("✅ Отправлено")
     except TelegramAPIError as e:
-        await message.answer(f"❌ Не вижу этот канал: {html.escape(str(e))}\n"
-                             "Проверь, что бот добавлен в него админом.")
+        await message.answer(f"❌ {html.escape(str(e))}")
+
+
+@router.message(Command("refund"))
+async def refund(message: Message, command: CommandObject, bot: Bot, game: Game) -> None:
+    charge_id = (command.args or "").strip()
+    pay = await game.db.one("SELECT * FROM payments WHERE charge_id = ?", charge_id) if charge_id else None
+    if not pay:
+        await message.answer("Формат: <code>/refund ID_чека</code> (чек приходит игроку после оплаты)")
         return
-    if me.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR):
-        await message.answer("❌ Бот не админ в этом канале — без этого подписку не проверить.")
+    try:
+        await bot.refund_star_payment(user_id=pay["user_id"], telegram_payment_charge_id=charge_id)
+        result = await game.revoke_purchase(charge_id)
+    except (TelegramAPIError, GameError) as e:
+        await message.answer(f"❌ {html.escape(getattr(e, 'message', str(e)))}")
         return
-
-    default_url = f"https://t.me/{chat.username}" if chat.username else None
-    await state.update_data(chat_id=chat.id, title=chat.title or str(chat.id), default_url=default_url)
-    await state.set_state(SponsorAdd.url)
-    hint = f"или «-», чтобы использовать {default_url}" if default_url else \
-        "(канал приватный — ссылка обязательна)"
-    await message.answer(
-        f"✅ Канал: <b>{html.escape(chat.title or '')}</b>\n\n"
-        f"2️⃣ Пришли ссылку для кнопки подписки {hint}.\n"
-        "Совет: создай отдельную пригласительную ссылку — рекламодатель увидит по ней, "
-        "сколько людей пришло от тебя.",
-        disable_web_page_preview=True,
-    )
+    await message.answer(f"✅ Возвращено {result['stars']} ⭐ игроку <code>{result['user_id']}</code>")
 
 
-@router.message(SponsorAdd.url, F.text)
-async def sponsor_add_url(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    url = message.text.strip()
-    if url == "-" and data.get("default_url"):
-        url = data["default_url"]
-    if not url.startswith("https://t.me/"):
-        await message.answer("Ссылка должна начинаться с https://t.me/")
+@router.message(Command("config"))
+async def show_config(message: Message, game: Game) -> None:
+    raw = await game.db.get_setting("game_config") or "{}"
+    await message.answer_document(
+        BufferedInputFile(json.dumps(game.cfg, ensure_ascii=False, indent=2).encode(), "game_config_full.json"),
+        caption=f"Переопределения сейчас:\n<code>{html.escape(raw[:800])}</code>\n\n"
+                "В файле полный действующий конфиг. Изменить: /setconfig {json} — "
+                "передавай только нужные ключи, остальное возьмётся по умолчанию.")
+
+
+@router.message(Command("setconfig"))
+async def set_config(message: Message, command: CommandObject, game: Game) -> None:
+    try:
+        override = json.loads(command.args or "")
+        if not isinstance(override, dict):
+            raise ValueError
+    except ValueError:
+        await message.answer("Нужен JSON-объект, например: <code>/setconfig {\"start_coins\": 300}</code>")
         return
-    await state.update_data(url=url)
-    await state.set_state(SponsorAdd.target)
-    await message.answer(
-        "3️⃣ Сколько подписчиков заказал спонсор? Пришли число "
-        "(0 — без лимита, спонсор висит, пока не отключишь вручную)."
-    )
-
-
-@router.message(SponsorAdd.target, F.text)
-async def sponsor_add_target(message: Message, state: FSMContext, db: Database) -> None:
-    if not message.text.strip().isdigit():
-        await message.answer("Нужно число, например 1000")
-        return
-    data = await state.get_data()
-    await db.add_sponsor(data["chat_id"], data["title"], data["url"], int(message.text.strip()))
-    await state.clear()
-    text, sponsors = await _sponsors_text(db)
-    await message.answer("✅ Спонсор добавлен!\n\n" + text, reply_markup=sponsors_kb(sponsors),
-                         disable_web_page_preview=True)
+    if "odds_version" not in override:
+        override["odds_version"] = game.cfg["odds_version"] + 1  # у каждой версии шансов своя дата
+    await game.db.set_setting("game_config", json.dumps(override, ensure_ascii=False))
+    await game.load_config()
+    await message.answer(f"✅ Конфиг обновлён, версия шансов {game.cfg['odds_version']}")
 
 
 # ---------- рассылка ----------
 
-@router.callback_query(F.data == "adm:mail")
-async def mail_start(call: CallbackQuery, state: FSMContext) -> None:
+@router.message(Command("broadcast"))
+async def mail_start(message: Message, state: FSMContext) -> None:
     await state.set_state(Mailing.message)
-    await call.answer()
-    await call.message.answer(
-        "✉️ Пришли сообщение для рассылки — текст, фото, видео, что угодно. "
-        "Оно уйдёт всем пользователям как есть.\n\n/cancel — отмена"
-    )
+    await message.answer("✉️ Пришли сообщение для рассылки (текст, фото, видео). /cancel — отмена")
 
 
 @router.message(Mailing.message)
 async def mail_message(message: Message, state: FSMContext) -> None:
     await state.update_data(chat_id=message.chat.id, message_id=message.message_id)
     await state.set_state(Mailing.button)
-    await message.answer(
-        "Добавить кнопку-ссылку? Пришли в формате:\n"
-        "<code>Текст кнопки | https://t.me/channel</code>\n\nили «-», чтобы без кнопки."
-    )
+    await message.answer("Кнопка «Играть» под сообщением? Ответь «да» или «нет».")
 
 
 @router.message(Mailing.button, F.text)
-async def mail_button(message: Message, state: FSMContext, bot: Bot) -> None:
-    button = None
-    if message.text.strip() != "-":
-        parts = [p.strip() for p in message.text.split("|", 1)]
-        if len(parts) != 2 or not parts[1].startswith(("https://", "http://", "tg://")):
-            await message.answer("Формат: <code>Текст | https://ссылка</code> или «-»")
-            return
-        button = parts
-    await state.update_data(button=button)
+async def mail_button(message: Message, state: FSMContext, bot: Bot, config: Config) -> None:
+    with_button = message.text.strip().lower() in ("да", "yes", "+")
+    await state.update_data(button=with_button and config.webapp_url.startswith("https://"))
     data = await state.get_data()
-    await message.answer("👀 Так увидят пользователи:")
+    await message.answer("👀 Так увидят игроки:")
     await bot.copy_message(message.chat.id, data["chat_id"], data["message_id"],
-                           reply_markup=_mail_markup(button))
-    await message.answer("Отправляем?", reply_markup=confirm_mail_kb())
+                           reply_markup=_play_markup(config) if data["button"] else None)
+    await state.set_state(Mailing.confirm)
+    await message.answer("Отправить всем? Ответь «отправить» или /cancel.")
 
 
-def _mail_markup(button: list[str] | None) -> InlineKeyboardMarkup | None:
-    if not button:
-        return None
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button[0], url=button[1])]])
-
-
-@router.callback_query(F.data == "adm:mail_cancel")
-async def mail_cancel(call: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await call.answer("Отменено")
-    await call.message.edit_text("✖️ Рассылка отменена")
-
-
-@router.callback_query(F.data == "adm:mail_go")
-async def mail_go(call: CallbackQuery, state: FSMContext, bot: Bot, db: Database) -> None:
+@router.message(Mailing.confirm, F.text.lower() == "отправить")
+async def mail_go(message: Message, state: FSMContext, bot: Bot, game: Game, config: Config) -> None:
     data = await state.get_data()
     await state.clear()
-    if "message_id" not in data:
-        await call.answer("Нечего отправлять", show_alert=True)
-        return
-    await call.answer()
-    await call.message.edit_text("🚀 Рассылка запущена, пришлю отчёт по завершении.")
-    task = asyncio.create_task(_broadcast(
-        bot, db, data["chat_id"], data["message_id"], _mail_markup(data.get("button")),
-        call.from_user.id,
-    ))
+    task = asyncio.create_task(_broadcast(bot, game, data["chat_id"], data["message_id"],
+                                          _play_markup(config) if data.get("button") else None,
+                                          message.from_user.id))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
+    await message.answer("🚀 Рассылка запущена, пришлю отчёт.")
 
 
-async def _broadcast(bot: Bot, db: Database, from_chat: int, message_id: int,
+def _play_markup(config: Config) -> InlineKeyboardMarkup:
+    from aiogram.types import WebAppInfo
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📱 Играть", web_app=WebAppInfo(url=config.webapp_url))]])
+
+
+async def _broadcast(bot: Bot, game: Game, from_chat: int, message_id: int,
                      markup: InlineKeyboardMarkup | None, admin_id: int) -> None:
-    user_ids = await db.active_user_ids()
+    rows = await game.db.all("SELECT id FROM users WHERE is_blocked = 0")
     sent = blocked = failed = 0
-    for uid in user_ids:
+    for (uid,) in rows:
         for _ in range(2):
             try:
                 await bot.copy_message(uid, from_chat, message_id, reply_markup=markup)
@@ -358,20 +208,15 @@ async def _broadcast(bot: Bot, db: Database, from_chat: int, message_id: int,
                 await asyncio.sleep(e.retry_after + 1)
                 continue
             except TelegramForbiddenError:
-                await db.set_blocked(uid, True)
+                async with game.db.tx():
+                    await game.db.run("UPDATE users SET is_blocked = 1 WHERE id = ?", uid)
                 blocked += 1
-            except TelegramBadRequest:
-                failed += 1
-            except TelegramAPIError as e:
-                log.warning("broadcast to %s failed: %s", uid, e)
+            except (TelegramBadRequest, TelegramAPIError):
                 failed += 1
             break
-        await asyncio.sleep(0.04)  # ~25 сообщений/сек — в пределах лимитов Telegram
+        await asyncio.sleep(0.04)
     try:
-        await bot.send_message(
-            admin_id,
-            f"✅ Рассылка завершена\n\nДоставлено: <b>{sent}</b>\n"
-            f"Заблокировали бота: <b>{blocked}</b>\nОшибки: <b>{failed}</b>",
-        )
+        await bot.send_message(admin_id, f"✅ Рассылка завершена\nДоставлено: <b>{sent}</b>\n"
+                                         f"Заблокировали бота: <b>{blocked}</b>\nОшибки: <b>{failed}</b>")
     except TelegramAPIError:
         pass
