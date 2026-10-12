@@ -117,12 +117,13 @@ h3 { font: 800 13px var(--body); letter-spacing: .08em; text-transform: uppercas
   -webkit-mask: linear-gradient(0deg, #000 60%, transparent); mask: linear-gradient(0deg, #000 60%, transparent); }
 .board .meta { display: flex; justify-content: space-between; align-items: center; font: 700 12px var(--body); color: var(--muted); }
 .board .tier-name { font: 800 12px var(--display); letter-spacing: .08em; text-transform: uppercase; color: var(--tcol, var(--muted)); }
-.num { font: 800 clamp(24px, 8.4vw, 34px)/1.2 var(--mono); position: relative; z-index: 1; letter-spacing: -.01em; white-space: nowrap; margin: 14px 0 4px;
+.board, .call { container-type: inline-size; }
+/* размер подбирается под длину номера, чтобы +375 29 511-11-11 тоже влезал в одну строку */
+.num { font: 800 clamp(20px, 7vw, 34px)/1.2 var(--mono); font-size: min(34px, calc(100cqw / (var(--len, 16) * 0.62))); position: relative; z-index: 1; letter-spacing: -.01em; white-space: nowrap; margin: 14px 0 4px;
   font-variant-numeric: tabular-nums; text-align: center; }
-.num .dial { color: var(--muted); font-size: .55em; vertical-align: .45em; margin-right: .25em; }
+.num .dial { color: var(--muted); }
 .num .op { color: #b9c6e6; }
 .reel { display: inline-block; height: 1.2em; line-height: 1.2em; overflow: hidden; vertical-align: top; }
-.num .dial { vertical-align: top; }
 .reel .strip { display: block; transition-timing-function: cubic-bezier(.12, .8, .2, 1.03); }
 .reel .strip span { display: block; height: 1.2em; }
 .board .label { position: relative; z-index: 1; text-align: center; font: 700 11px var(--body); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
@@ -149,7 +150,8 @@ h3 { font: 800 13px var(--body); letter-spacing: .08em; text-transform: uppercas
 .tile::before { content: ""; position: absolute; inset: 0; border-radius: inherit; border: 2px solid var(--tc); opacity: .55; pointer-events: none; }
 .tile .ti { display: flex; justify-content: space-between; font-size: 12px; }
 .tile .ti b { color: var(--tc); font-size: 13px; }
-.tile .tn { font: 800 13px/1.15 var(--mono); letter-spacing: -.02em; overflow-wrap: anywhere; }
+.tile .tn { font: 800 13px/1.25 var(--mono); letter-spacing: -.02em; overflow-wrap: anywhere; }
+.tile .tdial { display: block; color: var(--muted); }
 .tile .tp { margin-top: auto; font: 700 11px var(--mono); color: var(--muted); display: flex; align-items: center; gap: 4px; }
 .tile .tp .coin { width: 11px; height: 11px; vertical-align: -1px; }
 .tile.sel { background: var(--neon-dim); }

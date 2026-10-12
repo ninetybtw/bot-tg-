@@ -54,9 +54,10 @@
   const $top = document.getElementById("top"), $main = document.getElementById("main"), $nav = document.getElementById("nav");
 
   // ---------- фрагменты разметки ----------
+  const numBlock = (number, inner) => `<div class="num" style="--len:${number.length}">${inner || numHTML(number)}</div>`;
   function numHTML(number) {
     const [dial, op, ...rest] = number.split(" ");
-    return `<span class="dial">${esc(dial)}</span><span class="op">${esc(op)}</span> ${esc(rest.join(" "))}`;
+    return `<span class="dial">${esc(dial)}</span> <span class="op">${esc(op)}</span> ${esc(rest.join(" "))}`;
   }
   const tierName = t => `<span class="tcol">${t.icon} ${esc(t.name)}</span>`;
   function tile(it, opts = {}) {
@@ -64,8 +65,7 @@
     return `<button class="tile t${it.tier.idx} ${opts.sel ? "sel" : ""}" data-act="${opts.act || "item"}" data-id="${it.id}">
       ${it.is_new && !opts.noNew ? '<span class="new" aria-label="новый"></span>' : ""}
       <span class="ti"><b>${it.tier.icon}</b><span>${it.flag}${it.favorite ? " ★" : ""}</span></span>
-      <span class="tn">${esc(short)}</span>
-      <span class="small muted" style="font:700 10px var(--mono)">${esc(it.dial)} ${esc(it.op)}</span>
+      <span class="tn"><span class="tdial">${esc(it.dial)} ${esc(it.op)}</span>${esc(short)}</span>
       <span class="tp">${it.status === "listed" ? '<span class="badge">на рынке</span>' : `${COIN}${fmt(it.price)}`}</span>
     </button>`;
   }
@@ -73,7 +73,7 @@
     return `<div class="call t${it.tier.idx} ${cls}"><div class="rings"></div>
       <div class="who">Входящий · игровой номер</div>
       <div class="flag">${it.flag}</div><div class="small muted">${esc(it.country_name)}</div>
-      <div class="num">${numHTML(it.number)}</div>
+      ${numBlock(it.number)}
       <div class="facts">${it.chance ? `<span>Шанс <b>1 из ${fmt(it.chance)}</b></span>` : ""}<span>Цена <b>${fmt(it.price)}</b> ${COIN}</span></div>
     </div>`;
   }
@@ -172,10 +172,10 @@
     if (!it) {
       const c = S.countries.find(x => x.code === S.user.country);
       return `<div class="meta"><span>${c.flag} ${esc(c.name)}</span><span class="tier-name">Готов к спину</span></div>
-        <div class="num"><span class="dial">${esc(c.dial)}</span>••• •••-••-••</div><div class="label">Жми «Крутить» — номер появится здесь</div>`;
+        ${numBlock(c.dial + " ••• •••-••-••", `<span class="dial">${esc(c.dial)}</span> ••• •••-••-••`)}<div class="label">Жми «Крутить» — номер появится здесь</div>`;
     }
     return `<div class="meta"><span>${it.flag} ${esc(it.country_name)}</span><span class="tier-name" style="--tcol:var(--t${it.tier.idx})">${it.tier.icon} ${esc(it.tier.name)}</span></div>
-      <div class="num">${numHTML(it.number)}</div><div class="label">игровой номер · ${fmt(it.price)} монет</div>`;
+      ${numBlock(it.number)}<div class="label">игровой номер · ${fmt(it.price)} монет</div>`;
   }
   function renderPlay() {
     const u = S.user, t = S.today;
@@ -229,7 +229,7 @@
     }).join("");
     const dial = it.number.split(" ")[0];
     board.innerHTML = `<div class="meta"><span>${it.flag} ${esc(it.country_name)}</span><button class="link small" data-act="skip">Пропустить</button></div>
-      <div class="num"><span class="dial">${esc(dial)}</span>${html}</div><div class="label">крутим…</div>`;
+      ${numBlock(it.number, `<span class="dial">${esc(dial)}</span><span class="reel">&nbsp;</span>${html}`)}<div class="label">крутим…</div>`;
     const strips = [...board.querySelectorAll(".strip")];
     const total = 700 + strips.length * 130;
     return new Promise(resolve => {
@@ -461,7 +461,7 @@
   }
   function lotRow(l, act) {
     return `<div class="li t${l.tier.idx}"><span class="ic">${l.flag}</span>
-      <span class="grow"><b style="font-family:var(--mono)">${esc(l.number.split(" ").slice(1).join(" "))}</b>
+      <span class="grow"><b style="font-family:var(--mono)">${esc(l.number)}</b>
       <span class="small"><span class="tcol">${l.tier.icon} ${esc(l.tier.name)}</span> <span class="muted">· ${esc(l.seller)}</span></span></span>
       <span style="text-align:right"><span class="price">${fmt(l.lot_price)} ${COIN}</span><br>${act}</span></div>`;
   }
