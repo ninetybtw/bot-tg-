@@ -1,360 +1,719 @@
-/* Демо-сервер: работает, только когда приложение открыто вне Telegram.
-   Повторяет API игрового сервера (bot/game/service.py) в памяти вкладки,
-   чтобы игру можно было потрогать без бота. В Telegram не используется. */
+// Демо-сервер для просмотра мини-приложения вне Telegram. Повторяет API bot/web.py и правила
+// bot/game/service.py на клиенте: те же шансы, гарантии, тиражи, продажа с отменой и честный бросок
+// (HMAC-SHA256 через WebCrypto). Номера берутся из пула, собранного настоящим генератором
+// (scripts/build_demo_config.py). В Telegram с initData не используется.
 (() => {
   "use strict";
-  const PRICES = [10, 30, 100, 400, 2000, 10000, 50000, 250000];
-  const TIERS = [
-    ["common", "Обычный", "○", "#9aa4b2"], ["uncommon", "Необычный", "◇", "#4cc38a"], ["rare", "Редкий", "◆", "#4c8dff"],
-    ["epic", "Эпик", "⬢", "#a06bff"], ["legendary", "Легендарный", "★", "#ff5fb4"], ["mythic", "Мифический", "✹", "#ff4d4d"],
-    ["secret", "Секретный", "♛", "#f5c542"], ["divine", "Божественный", "✺", "rainbow"], ["exclusive", "Эксклюзив", "◈", "#111111"],
-  ].map(([key, name, icon, color], idx) => ({ idx, key, name, icon, color }));
-  const SCALES = {
-    phone: { title: "Обычный спин", price: 100, odds: { 0: .62, 1: .24, 2: .09, 3: .035, 4: .012, 5: .003 } },
-    premium: { title: "Премиум-спин", price: 500, odds: { 2: .70, 3: .22, 4: .067, 5: .012, 6: .001 } },
+  const C = window.DEMO_CONFIG, D = window.DEMO_DATA;
+  if (!C || !D) return;
+  const G = D.game, LAD = C.ladder_cents;
+  const EPIC = 3, LEGENDARY = 4, RARE = 2, SECRET = 6;
+  const KEY = "dozvon-demo-v14";
+  const now = () => Date.now() / 1000;
+  const MSK = 3 * 3600;
+  const dayKey = ts => new Date((ts + MSK) * 1000).toISOString().slice(0, 10);
+  const weekKey = ts => {
+    const d = new Date((ts + MSK) * 1000); d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+    const y = d.getUTCFullYear(), w = Math.ceil(((d - Date.UTC(y, 0, 1)) / 864e5 + 1) / 7);
+    return `W${y}-${String(w).padStart(2, "0")}`;
   };
-  const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => String(a + i));
-  const COUNTRIES = {
-    RU: { code: "RU", name: "Россия", flag: "🇷🇺", dial: "+7", ops: range(900, 999), groups: [3, 2, 2], sep: "-" },
-    KZ: { code: "KZ", name: "Казахстан", flag: "🇰🇿", dial: "+7", ops: ["700", "701", "702", "705", "707", "708", "747", "750", "751", "760", "771", "775", "776", "777", "778"], groups: [3, 2, 2], sep: "-" },
-    BY: { code: "BY", name: "Беларусь", flag: "🇧🇾", dial: "+375", ops: ["25", "29", "33", "44"], groups: [3, 2, 2], sep: "-" },
-    AE: { code: "AE", name: "ОАЭ", flag: "🇦🇪", dial: "+971", ops: ["50", "52", "54", "55", "56", "58"], groups: [3, 4], sep: " " },
-  };
-  const DIVINE = [["RU", "900", "0000000"], ["KZ", "700", "0000000"], ["BY", "25", "0000000"], ["AE", "50", "0000000"]];
-  const BLACKLIST = ["1488", "228", "420", "69"];
-  const D = "0123456789";
-  const rnd = n => Math.floor(Math.random() * n);
-  const pick = a => a[rnd(a.length)];
-  const rand = n => Array.from({ length: n }, () => pick(D)).join("");
-  const DAY = 86400e3;
+  const err = (message, code = "BAD_REQUEST", extra = {}) => { throw { code, message, ...extra }; };
+  const level = key => C.levels.find(l => l.key === key);
+  const oddsObj = lv => Object.fromEntries(lv.odds.map(r => [r.tier, r.p]));
+  const sumP = (o, f) => Object.entries(o).reduce((a, [t, p]) => a + (f(+t) ? p : 0), 0);
+  const COUNTRIES = C.currency.countries;
+  function money(cents) {
+    const c = COUNTRIES[S.user.country] || COUNTRIES.RU;
+    const [a, b] = (cents / 100 * c.rate).toFixed(c.decimals).split(".");
+    return `${a.replace(/\B(?=(\d{3})+(?!\d))/g, " ")}${b ? "," + b : ""} ${c.symbol}`;
+  }
 
-  // ---------- классификатор (порт bot/game/phones.py) ----------
-  const maxRun = s => { let b = 1, c = 1; for (let i = 1; i < s.length; i++) { c = s[i] === s[i - 1] ? c + 1 : 1; b = Math.max(b, c); } return b; };
-  const maxLadder = s => { let b = 1; for (const st of [1, -1]) { let c = 1; for (let i = 1; i < s.length; i++) { c = (+s[i] - +s[i - 1] === st) ? c + 1 : 1; b = Math.max(b, c); } } return b; };
-  const ladderEnd = (s, n) => { const t = s.slice(-n); return [1, -1].some(st => [...t].every((ch, i) => i === 0 || +ch - +t[i - 1] === st)); };
-  const pal = s => s === [...s].reverse().join("");
-  function classify(cc, op, sub) {
-    const full = op + sub;
-    if (DIVINE.some(d => d[0] === cc && d[1] === op && d[2] === sub)) return 7;
-    const same = new Set(full).size === 1;
-    if (pal(full) && !same) return 6;
-    if (same || (full.length >= 9 && maxLadder(full) === full.length)) return 5;
-    const s = sub;
-    if (maxRun(s) >= 6) return 4;
-    if (new Set(s.slice(-4)).size === 1 || maxLadder(s) >= 4 || (s[3] === s[4] && s[5] === s[6]) || pal(s.slice(-6))) return 3;
-    if (maxRun(s) >= 3 || pal(s.slice(-4)) || ladderEnd(s, 3)) return 2;
-    if (s[6] === s[5]) return 1;
-    return 0;
+  // ---------- честный бросок ----------
+  const subtle = window.crypto && crypto.subtle;
+  const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+  const bytes = h => { const a = new Uint8Array(h.length / 2); for (let i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16); return a; };
+  const randHex = n => { const a = new Uint8Array(n); crypto.getRandomValues(a); return hex(a); };
+  async function seedHash(s) { return subtle ? hex(await subtle.digest("SHA-256", bytes(s))) : randHex(32); }
+  async function roll(server, client, nonce, i) {
+    if (!subtle) return Math.random();
+    const k = await subtle.importKey("raw", bytes(server), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sig = hex(await subtle.sign("HMAC", k, new TextEncoder().encode(`${client}:${nonce}:${i}`)));
+    return parseInt(sig.slice(0, 13), 16) / 2 ** 52;
   }
-  function ladder(n) { const st = pick([1, -1]), a = rnd(10), o = []; for (let i = 0; i < n; i++) o.push(a + i * st); return o.every(d => d >= 0 && d <= 9) ? o.join("") : null; }
-  function build(tier, c) {
-    const op = pick(c.ops), s = rand(7), d = pick(D);
-    if (tier === 0) return [op, s];
-    if (tier === 1) return [op, s.slice(0, 5) + (Math.random() < .8 ? d + d : "00")];
-    if (tier === 2) { const k = rnd(3); if (k === 0) { const p = rnd(5); return [op, s.slice(0, p) + d.repeat(3) + s.slice(p + 3)]; } if (k === 1) { const a = pick(D), b = pick(D); return [op, s.slice(0, 3) + a + b + b + a]; } const l = ladder(3); return l ? [op, s.slice(0, 4) + l] : null; }
-    if (tier === 3) { const k = rnd(4); if (k === 0) return [op, s.slice(0, 3) + d.repeat(4)]; if (k === 1) { const n = pick([4, 4, 5]), l = ladder(n); if (!l) return null; const p = rnd(8 - n); return [op, s.slice(0, p) + l + s.slice(p + n)]; } if (k === 2) { let a = pick(D), b = pick(D); if (a === b) return null; return [op, s.slice(0, 3) + a + a + b + b]; } const h = rand(3); return [op, s.slice(0, 1) + h + [...h].reverse().join("")]; }
-    if (tier === 4) { const n = pick([6, 6, 7]), p = rnd(8 - n); return [op, s.slice(0, p) + d.repeat(n) + s.slice(p + n)]; }
-    if (tier === 5) { const o = []; for (const x of c.ops) { if (new Set(x).size === 1) o.push([x, x[0].repeat(7)]); for (const l of ["0123456789", "9876543210", "123456789", "987654321"]) if (l.length === x.length + 7 && l.startsWith(x)) o.push([x, l.slice(x.length)]); } return o.length ? pick(o) : null; }
-    if (tier === 6) { const total = op.length + 7, hl = Math.ceil(total / 2), head = op + rand(hl - op.length), full = head + [...head.slice(0, Math.floor(total / 2))].reverse().join(""); return [op, full.slice(op.length)]; }
-    if (tier === 7) { const own = DIVINE.filter(x => x[0] === c.code); return own.length ? [own[0][1], own[0][2]] : null; }
-    return null;
+  function pickTier(u, odds) {
+    let acc = 0;
+    const keys = Object.keys(odds).map(Number).sort((a, b) => a - b);
+    for (const t of keys) { acc += odds[t]; if (u < acc) return t; }
+    return keys[keys.length - 1];
   }
-  function generate(tier, country) {
-    for (const cc of [country, ...Object.keys(COUNTRIES).filter(x => x !== country)]) {
-      const c = COUNTRIES[cc];
-      for (let i = 0; i < 2000; i++) {
-        const b = build(tier, c);
-        if (!b || b[1].length !== 7) continue;
-        if (tier !== 7 && BLACKLIST.some(x => (b[0] + b[1]).includes(x))) continue;
-        if (classify(cc, b[0], b[1]) === tier) return [cc, b[0], b[1]];
-      }
-    }
-    throw new Error("generate");
-  }
-  const fmtNum = (cc, op, sub) => { const c = COUNTRIES[cc]; let i = 0; const parts = c.groups.map(g => { const p = sub.slice(i, i + g); i += g; return p; }); return `${c.dial} ${op} ${parts.join(c.sep)}`; };
-  const chanceFor = t => { for (const k of ["phone", "premium"]) { const p = SCALES[k].odds[t]; if (p) return Math.max(1, Math.round(1 / p)); } return null; };
+
+  // ---------- шансы ----------
   function applyLuck(odds, m) {
     if (m <= 1) return { ...odds };
-    const keys = Object.keys(odds).map(Number), top = [...keys].sort((a, b) => odds[b] - odds[a]).slice(0, 2);
-    const out = {}; let boosted = 0;
-    keys.filter(k => !top.includes(k)).forEach(k => { out[k] = odds[k] * m; boosted += out[k]; });
+    const keys = Object.keys(odds).map(Number);
+    const top = [...keys].sort((a, b) => odds[b] - odds[a]).slice(0, 2);
+    const out = {};
+    keys.filter(k => !top.includes(k)).forEach(k => { out[k] = odds[k] * m; });
+    const rest = 1 - Object.values(out).reduce((a, b) => a + b, 0);
     const cs = top.reduce((a, k) => a + odds[k], 0);
-    top.forEach(k => { out[k] = odds[k] * (1 - boosted) / cs; });
+    top.forEach(k => { out[k] = odds[k] * rest / cs; });
     return out;
   }
-  const levelFromXp = xp => { let l = 1, need = 100; while (xp >= need) { xp -= need; l++; need = 100 + 50 * (l - 1); } return [l, xp, need]; };
-  const dayKey = ts => new Date(ts + 3 * 3600e3).toISOString().slice(0, 10);
+  const groupProb = (base, n, soft, step, hard) => n >= hard ? 1 : n >= soft ? Math.min(1, base + (n - soft + 1) * step) : base;
+  function pityChances(odds, pe, pl) {
+    const A = C.pity.epic_plus, B = C.pity.legend_plus;
+    const qb = groupProb(sumP(odds, t => t >= LEGENDARY), pl + 1, B.soft, B.step_pct / 100, B.hard);
+    const qa = Math.max(groupProb(sumP(odds, t => t >= EPIC), pe + 1, A.soft, A.step_pct / 100, A.hard), qb);
+    return [qa, qb];
+  }
+  function withPity(odds, pe, pl) {
+    let [pa, pb] = pityChances(odds, pe, pl);
+    pb = Math.min(pb, 1); pa = Math.max(Math.min(pa, 1), pb);
+    const out = {};
+    for (const [f, share] of [[t => t >= LEGENDARY, pb], [t => t >= EPIC && t < LEGENDARY, pa - pb], [t => t < EPIC, 1 - pa]]) {
+      const s = sumP(odds, f);
+      for (const t in odds) if (f(+t)) out[t] = s ? odds[t] / s * share : 0;
+    }
+    return out;
+  }
+  function levelFromXp(xp) {
+    let lvl = 1, need = 100;
+    while (xp >= need) { xp -= need; lvl++; need = 100 + 50 * (lvl - 1); }
+    return [lvl, xp, need];
+  }
 
-  // ---------- мир демо ----------
-  let nextId = 1, nextLot = 1;
-  const now = () => Date.now();
-  const items = [], lots = [], ledger = [], counters = {};
-  const ME = 1;
-  const users = {
-    [ME]: { id: ME, first_name: "Ты", coins: 2000, spins: 5, energy: 3, energy_ts: now(), xp: 0, total_spins: 0, pity_epic: 0, pity_legendary: 0,
-      luck_mult: 1, luck_left: 0, upgrade_bonus: 0, gift_day: null, gift_streak: 0, country: "RU", settings: { fast: false, no_effects: false, no_upgrader: false },
-      badges: [], created_at: now() - 3 * DAY, ref_count: 2 },
+  // ---------- состояние ----------
+  let S = null;
+  const OTHERS = [["Алина", true, 10], ["Макс", true, 7], ["Денис", true, 3], ["Катя", false], ["Тимур", false], ["Саша", false], ["Ира", false], ["Артём", false]];
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* без хранилища */ } };
+  const counter = (key, inc = 0, day = dayKey(now())) => {
+    const k = day + "|" + key;
+    if (inc) S.counters[k] = (S.counters[k] || 0) + inc;
+    return S.counters[k] || 0;
   };
-  const NAMES = ["Аня", "Миша", "Лера", "Тимур", "Даня", "Соня", "Артём"];
-  const cnt = (k, inc = 0, uid = ME) => { const key = `${uid}|${dayKey(now())}|${k}`; counters[key] = (counters[key] || 0) + inc; return counters[key]; };
-  const log = (currency, delta, reason, uid = ME) => { if (delta && uid === ME) ledger.unshift({ currency, delta, reason, created_at: now() / 1000 }); };
-  function newItem(uid, tier, country, source) {
-    const [cc, op, sub] = generate(tier, country);
-    const it = { id: nextId++, user_id: uid, country: cc, op, sub, tier, price: PRICES[tier], status: "owned", is_new: uid === ME, favorite: false, created_at: now() / 1000, source };
-    items.push(it);
-    return it;
+  const ledger = (currency, delta, reason) => { if (delta) S.ledger.push({ currency, delta, reason, created_at: now() }); };
+  const add = (cents, attempts, reason) => { S.user.balance += cents; S.user.attempts += attempts; ledger("rub", cents, reason); ledger("attempts", attempts, reason); };
+  async function newPair(client) {
+    const server = randHex(32);
+    const pair = { id: S.seeds.length + 1, server_seed: server, server_hash: await seedHash(server), client_seed: client || randHex(8), nonce: 0, active: true, revealed_at: null };
+    S.seeds.push(pair);
+    return pair;
   }
-  function view(it) {
-    const c = COUNTRIES[it.country];
-    return { id: it.id, country: it.country, flag: c.flag, country_name: c.name, dial: c.dial, op: it.op, sub: it.sub, number: fmtNum(it.country, it.op, it.sub),
-      tier: TIERS[it.tier], price: it.price, chance: chanceFor(it.tier), status: it.status, is_new: it.is_new, favorite: it.favorite, created_at: it.created_at };
-  }
-  // стартовая коллекция и соседи по рынку
-  [0, 0, 0, 0, 0, 0, 1, 1, 1, 2].forEach(t => newItem(ME, t, pick(["RU", "RU", "KZ", "BY", "AE"]), "demo"));
-  ledger.unshift({ currency: "coins", delta: 2000, reason: "start", created_at: now() / 1000 });
-  NAMES.forEach((name, i) => {
-    const uid = 100 + i;
-    users[uid] = { id: uid, first_name: name, coins: 0, created_at: now() - 30 * DAY, total_spins: 10 + rnd(300) };
-    const n = 6 + rnd(10);
-    for (let k = 0; k < n; k++) { const r = Math.random(); newItem(uid, r < .5 ? 0 : r < .75 ? 1 : r < .9 ? 2 : r < .97 ? 3 : r < .995 ? 4 : 5, pick(Object.keys(COUNTRIES)), "spin"); }
-  });
-  items.filter(i => i.user_id !== ME && i.tier >= 1).slice(0, 14).forEach(it => {
-    it.status = "listed";
-    lots.push({ id: nextLot++, item_id: it.id, seller_id: it.user_id, price: Math.round(it.price * (0.8 + Math.random() * 0.6)), status: "active", created_at: now(), expires_at: now() + 3 * DAY });
-  });
+  const pair = () => S.seeds.find(p => p.active);
 
-  const TASKS = [
-    { key: "spin3", title: "Сделай 3 спина", event: "spin", target: 3, coins: 40 },
-    { key: "sell1", title: "Продай 1 номер", event: "sell", target: 1, coins: 30 },
-    { key: "wheel1", title: "Крутни колесо", event: "wheel", target: 1, coins: 30 },
-  ];
-  const WHEEL = [{ label: "50", coins: 50, p: .55 }, { label: "100", coins: 100, p: .25 }, { label: "250", coins: 250, p: .12 }, { label: "1 спин", spins: 1, p: .06 }, { label: "1 000", coins: 1000, p: .02 }];
-  const GIFT = [50, 75, 100, 150, 200, 300, { coins: 500, spins: 3 }];
-  const PRODUCTS = {
-    spins5: { title: "Попытки ×5", desc: "5 дополнительных спинов", stars: 25, spins: 5 },
-    spins20: { title: "Попытки ×20", desc: "20 дополнительных спинов", stars: 89, spins: 20 },
-    spins50: { title: "Попытки ×50", desc: "50 дополнительных спинов", stars: 199, spins: 50 },
-    luck15: { title: "Удача ×1,5", desc: "Шансы старших ступеней ×1,5 на 10 спинов", stars: 29, luck: 1.5 },
-    luck2: { title: "Удача ×2", desc: "Шансы старших ступеней ×2 на 10 спинов", stars: 49, luck: 2 },
+  async function init() {
+    try { S = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) { S = null; }
+    if (S && S.v === 1) return;
+    const t = now();
+    S = {
+      v: 1, nextId: 1, items: [], editions: {}, drops: [], ledger: [], sales: [], lots: [], counters: {}, seeds: [], payments: [], feed: [],
+      user: {
+        id: 1, name: "Гость", created_at: t - 3 * 86400, balance: G.start_cents, attempts: 0, energy: G.energy.max, energy_ts: t, xp: 0,
+        total_spins: 0, pity_epic: 0, pity_legend: 0, luck_mult: 1, luck_left: 0, upgrade_bonus: 0, vip_until: null, vip_day: null,
+        slots_extra: 0, slots_bought: 0, start_pack: false, starter_used: false, country: "RU", country_confirmed: false,
+        country_changed_at: null, settings: {}, showcase: [], badges: [], gift_day: dayKey(t - 86400), gift_streak: 2, ref_count: 2,
+      },
+      others: OTHERS.map(([name, friend, spins], i) => ({ id: 100 + i, name, friend, spins: spins || 0, xp: 300 + ((i * 397) % 2400), extra: 1500000 + ((i * 7919) % 9) * 900000 })),
+      raffle: {},
+    };
+    ledger("rub", G.start_cents, "start");
+    await newPair();
+    // задания в прошлые дни: колесо недели откроется после первого задания сегодня
+    for (let d = 1; d <= 4; d++) S.counters[dayKey(t - d * 86400) + "|claimed:spin3"] = 1;
+    // мир: у других игроков есть номера, лоты на рынке и Эпик+ в ленте
+    const lotTiers = [0, 1, 1, 2, 2, 3, 3, 4, 5, 2, 0, 3];
+    lotTiers.forEach((tier, i) => {
+      const o = S.others[i % S.others.length];
+      const it = issue(o.id, tier, (i * 0.137 + 0.05) % 1, "spin", "listed");
+      it.created_at = t - 86400 * (1 + i % 3);
+      const k = [0.8, 1.15, 0.95, 1.3, 0.7, 1.05][i % 6];
+      S.lots.push({ id: i + 1, item_id: it.id, seller_id: o.id, price_cents: Math.round(LAD[tier] * k / 100) * 100, created_at: t - 3600 * (i + 1), expires_at: t + 86400 * 2, status: "active" });
+    });
+    [[0, 4], [1, 3], [3, 5], [4, 3], [2, 3], [5, 4], [6, 6], [7, 3]].forEach(([oi, tier], i) => {
+      const o = S.others[oi];
+      const it = issue(o.id, tier, (i * 0.311 + 0.2) % 1, "spin", "free");
+      S.feed.push({ user_id: o.id, item_id: it.id, created_at: t - 600 * (i + 1) });
+    });
+    const yd = dayKey(t - 86400), ys = randHex(32);
+    S.raffle[yd] = { server_seed: ys, server_hash: await seedHash(ys), drawn: true, winners: [{ name: "Катя", place: 1, prize: "⬢ Эпик номер" }, { name: "Макс", place: 2, prize: "◆ Редкий номер" }, { name: "Ира", place: 3, prize: "◆ Редкий номер" }] };
+    save();
+  }
+  async function raffleRow(day) {
+    if (!S.raffle[day]) { const s = randHex(32); S.raffle[day] = { server_seed: s, server_hash: await seedHash(s), drawn: false, winners: [] }; }
+    return S.raffle[day];
+  }
+
+  // ---------- предметы ----------
+  function energy() {
+    const u = S.user, mx = G.energy.max, period = G.energy.regen_minutes * 60, t = now();
+    if (u.energy >= mx) return [u.energy, t];
+    const gained = Math.floor((t - u.energy_ts) / period);
+    if (gained <= 0) return [u.energy, u.energy_ts];
+    const e = Math.min(mx, u.energy + gained);
+    return [e, e >= mx ? t : u.energy_ts + gained * period];
+  }
+  const vip = () => !!(S.user.vip_until && S.user.vip_until > now());
+  const capacity = () => Math.min(C.inventory.slots_max, C.inventory.slots + S.user.slots_extra + (vip() ? G.shop.vip_slots : 0));
+  const coinCap = () => Math.min(G.coin_spins.per_day_max, G.coin_spins.per_day_base + G.coin_spins.per_level * (levelFromXp(S.user.xp)[0] - 1));
+  const mine = (states = ["free", "listed"]) => S.items.filter(i => i.user_id === 1 && states.includes(i.state));
+  function slots() {
+    return { used: mine().length, total: capacity(), overflow: mine(["overflow"]).length, overflow_max: C.inventory.overflow_slots };
+  }
+  function promoteOverflow() {
+    let free = capacity() - mine().length;
+    for (const i of mine(["overflow"]).sort((a, b) => a.id - b.id)) { if (free <= 0) break; i.state = "free"; i.overflow_until = null; free--; }
+  }
+  function place(n) {
+    const s = slots(), free = Math.max(0, s.total - s.used), over = Math.max(0, s.overflow_max - s.overflow);
+    if (n > free + over) err("Нет места: освободи коллекцию — продай лишнее или выставь на рынок", "INVENTORY_FULL");
+    return Array.from({ length: n }, (_, i) => i < free ? "free" : "overflow");
+  }
+  function issue(uid, tier, u1, source, state = "free") {
+    const pool = D.pool[tier] || D.pool[Math.min(tier, 6)];
+    const size = +(C.editions[String(tier)] || 1);
+    const start = Math.floor(u1 * pool.length);
+    for (let k = 0; k < pool.length; k++) {
+      const [country, op, sub, rule, hl] = pool[(start + k) % pool.length];
+      const key = `${country}:${op}${sub}`;
+      const ed = S.editions[key] || (S.editions[key] = { size, issued: size > 1 ? Math.floor(u1 * 7) % size : 0 });
+      if (ed.issued >= ed.size) continue;
+      ed.issued++;
+      const t = now();
+      const it = { id: S.nextId++, user_id: uid, country, op, sub, key, tier: tier === 7 ? 7 : tier, rule, hl, source, state, serial_no: ed.issued, edition_size: size, created_at: t, locked: false, favorite: false, is_new: uid === 1, hold_until: null, overflow_until: state === "overflow" ? t + C.inventory.overflow_hours * 3600 : null };
+      S.items.push(it);
+      return it;
+    }
+    err("Тираж этой ступени закончился. Попробуй позже", "CONFLICT");
+  }
+  function formatNumber(country, op, sub) {
+    const c = D.countries[country];
+    let i = 0;
+    const parts = c.groups.map(g => { const s = sub.slice(i, i + g); i += g; return s; });
+    return `${c.dial} ${op} ${parts.join(c.sep)}`;
+  }
+  const tierDict = i => C.tiers[i];
+  function view(r) {
+    const c = D.countries[r.country];
+    const common = oddsObj(C.levels[0]);
+    return {
+      id: r.id, user_id: r.user_id, country: r.country, flag: c.flag, country_name: c.name, dial: c.dial, op: r.op, sub: r.sub,
+      number: formatNumber(r.country, r.op, r.sub), tier: tierDict(r.tier), rule: r.rule, rule_name: C.rules[r.rule] || r.rule,
+      highlight: r.hl, price_cents: LAD[r.tier], got_price_cents: LAD[r.tier], sell_cents: Math.floor(LAD[r.tier] * C.sell_system_pct / 100),
+      one_in: common[r.tier] ? Math.max(1, Math.round(1 / common[r.tier])) : null,
+      copy: r.edition_size > 1 ? { no: r.serial_no, of: r.edition_size, in_game: S.editions[r.key].issued } : null,
+      state: r.state, locked: r.locked, favorite: r.favorite, is_new: r.is_new, source: r.source, created_at: r.created_at,
+      hold_until: r.hold_until && r.hold_until > now() ? r.hold_until : null, overflow_until: r.overflow_until,
+    };
+  }
+  function owned(ids, states = ["free"]) {
+    ids = [...new Set(ids.map(Number))];
+    if (!ids.length) err("Ничего не выбрано");
+    const rows = S.items.filter(i => i.user_id === 1 && ids.includes(i.id) && states.includes(i.state));
+    if (rows.length !== ids.length) {
+      if (S.items.some(i => i.user_id === 1 && ids.includes(i.id) && i.state === "listed")) err("Номер выставлен на рынке. Сначала сними лот", "ITEM_BUSY");
+      err("Часть номеров уже недоступна. Обнови коллекцию", "CONFLICT");
+    }
+    return rows;
+  }
+  const collectionValue = uid => S.items.filter(i => i.user_id === uid && i.state !== "gone").reduce((a, i) => a + LAD[i.tier], 0);
+
+  // ---------- задания ----------
+  function todayTasks(ts) {
+    let h = 0;
+    for (const ch of dayKey(ts)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    const pool = [...G.tasks];
+    for (let i = pool.length - 1; i > 0; i--) { h = (h * 1103515245 + 12345) >>> 0; const j = h % (i + 1); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+    return pool.slice(0, G.tasks_per_day);
+  }
+  function taskEvent(event, n = 1) {
+    const t = now();
+    todayTasks(t).forEach(x => { if (x.event === event) counter("task:" + x.key, n); });
+    G.weekly_tasks.forEach(x => { if (x.event === event) counter("wtask:" + x.key, n, weekKey(t)); });
+  }
+  function taskDays() {
+    const t = now();
+    let n = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = dayKey(t - i * 86400) + "|claimed:";
+      if (Object.keys(S.counters).some(k => k.startsWith(d))) n++;
+    }
+    return n;
+  }
+  function dailyVip() {
+    const today = dayKey(now());
+    if (vip() && S.user.vip_day !== today) { S.user.vip_day = today; add(0, G.shop.vip_daily_attempts, "vip_daily"); }
+  }
+
+  // ---------- эндпоинты ----------
+  const H = {};
+  H.config = () => C;
+  H.me = () => {
+    dailyVip(); promoteOverflow();
+    const u = S.user, t = now(), [e, ets] = energy(), [lvl, xpIn, need] = levelFromXp(u.xp);
+    const today = dayKey(t), yesterday = dayKey(t - 86400), week = weekKey(t);
+    const common = oddsObj(C.levels[0]);
+    const odds = u.luck_left > 0 ? applyLuck(common, u.luck_mult) : common;
+    const [qa, qb] = pityChances(odds, u.pity_epic, u.pity_legend);
+    const lastDrop = [...S.drops].reverse().find(d => d.action === "spin");
+    const sale = [...S.sales].reverse().find(s => !s.undone && s.undo_until > t);
+    const changeAfter = u.country_changed_at ? u.country_changed_at + C.currency.change_days * 86400 : null;
+    const td = taskDays();
+    return {
+      user: { id: 1, name: u.name, level: lvl, xp: xpIn, xp_need: need, total_spins: u.total_spins, badges: u.badges, vip_until: vip() ? u.vip_until : null, created_at: u.created_at, showcase: u.showcase },
+      country: u.country, country_confirmed: u.country_confirmed, country_change_after: changeAfter && changeAfter > t ? changeAfter : null,
+      currency: { country: u.country, ...COUNTRIES[u.country], game_label: C.currency.show_game_label },
+      balance_cents: u.balance, attempts: u.attempts,
+      energy: { now: e, max: G.energy.max, next_in: e >= G.energy.max ? 0 : Math.floor(G.energy.regen_minutes * 60 - (t - ets)) },
+      coin_spins_left: Math.max(0, coinCap() - counter("coin_spins")),
+      upper_spins_left: Math.max(0, G.upper_levels_per_day - counter("upper_spins")),
+      luck: u.luck_left > 0 ? { mult: u.luck_mult, spins_left: u.luck_left } : null,
+      pity: { epic_in: C.pity.epic_plus.hard - u.pity_epic, epic_chance: qa, legend_in: C.pity.legend_plus.hard - u.pity_legend, legend_chance: qb },
+      slots: slots(), starter: !u.starter_used,
+      settings: { fast: false, no_effects: false, no_upgrader: false, ...u.settings },
+      today: {
+        gift: u.gift_day !== today,
+        gift_day: u.gift_day !== today ? (u.gift_day === yesterday ? (u.gift_streak % 7) + 1 : 1) : u.gift_streak,
+        wheel_daily: counter("wheel") === 0,
+        wheel_weekly: td >= G.wheel_weekly.unlock_days && !counter("wheel_weekly", 0, week),
+        wheel_weekly_used: !!counter("wheel_weekly", 0, week),
+        task_days: td,
+        tasks: todayTasks(t).map(x => ({ key: x.key, title: x.title, target: x.target, cents: x.cents, progress: Math.min(counter("task:" + x.key), x.target), claimed: !!counter("claimed:" + x.key) })),
+        weekly_tasks: G.weekly_tasks.map(x => ({ key: x.key, title: x.title, target: x.target, cents: x.cents, badge: x.badge, progress: Math.min(counter("wtask:" + x.key, 0, week), x.target), claimed: !!counter("wclaimed:" + x.key, 0, week) })),
+        tickets: counter("tickets"),
+      },
+      last_drop: lastDrop ? view(S.items.find(i => i.id === lastDrop.item_id)) : null,
+      last_sale: sale ? { id: sale.id, amount_cents: sale.amount_cents, undo_until: sale.undo_until, count: sale.item_ids.length } : null,
+      stars_enabled: true, ref_link: "https://t.me/твой_бот?start=r1",
+    };
   };
-  let starsSpent = 0;
-  const err = (message, code = "error", extra = {}) => { throw Object.assign({ message, code }, extra); };
-  const task = (ev, n = 1) => TASKS.filter(t => t.event === ev).forEach(t => cnt("task:" + t.key, n));
-  const PERIOD = 3 * 3600e3;
-  function energy(u) {
-    if (u.energy >= 3) { u.energy_ts = now(); return; }
-    const g = Math.floor((now() - u.energy_ts) / PERIOD);
-    if (g > 0) { u.energy = Math.min(3, u.energy + g); u.energy_ts = u.energy >= 3 ? now() : u.energy_ts + g * PERIOD; }
-  }
-  const owned = ids => { const out = ids.map(id => items.find(i => i.id === id && i.user_id === ME && i.status === "owned")); if (!ids.length) err("Ничего не выбрано"); if (out.some(x => !x)) err("Часть номеров уже недоступна. Обнови коллекцию"); return out; };
-  const colValue = uid => items.filter(i => i.user_id === uid && i.status !== "gone").reduce((a, i) => a + i.price, 0);
-  const coinCap = u => Math.min(60, 30 + levelFromXp(u.xp)[0] - 1);
-
-  const H = {
-    state() {
-      const u = users[ME]; energy(u);
-      const [level, xp, need] = levelFromXp(u.xp);
-      const today = dayKey(now()), yesterday = dayKey(now() - DAY);
-      const last = [...items].reverse().find(i => i.user_id === ME && i.source !== "demo" && i.source !== "market");
-      const luck = u.luck_left > 0 ? u.luck_mult : 1;
-      const odds = {};
-      for (const [k, sc] of Object.entries(SCALES)) { const b = applyLuck(sc.odds, luck); odds[k] = { title: sc.title, price: sc.price, rows: Object.keys(sc.odds).map(Number).sort((a, b) => a - b).map(t => ({ tier: TIERS[t], p: sc.odds[t], p_luck: b[t] })) }; }
-      return {
-        user: { id: ME, name: u.first_name, username: null, coins: u.coins, spins: u.spins, energy: u.energy, energy_max: 3,
-          next_energy_in: u.energy >= 3 ? 0 : Math.round((PERIOD - (now() - u.energy_ts)) / 1000), level, xp, xp_need: need, total_spins: u.total_spins,
-          luck, luck_left: u.luck_left, country: u.country, settings: { ...u.settings }, badges: u.badges, coin_spins_left: coinCap(u) - cnt("coin_spins"),
-          pity_epic_left: 40 - u.pity_epic, pity_legendary_left: 200 - u.pity_legendary, created_at: u.created_at / 1000 },
-        today: { wheel: cnt("wheel") === 0, gift: u.gift_day !== today, gift_day: u.gift_day !== today ? (u.gift_day === yesterday ? (u.gift_streak % 7) + 1 : 1) : u.gift_streak,
-          gift_rewards: GIFT, tasks: TASKS.map(t => ({ key: t.key, title: t.title, target: t.target, progress: Math.min(t.target, cnt("task:" + t.key)), coins: t.coins, claimed: !!cnt("claimed:" + t.key) })) },
-        wheel: WHEEL.map(w => ({ label: w.label, p: w.p })), odds,
-        countries: Object.values(COUNTRIES).map(c => ({ code: c.code, name: c.name, flag: c.flag, dial: c.dial })),
-        tiers: TIERS, last_drop: last ? view(last) : null, stars_enabled: true, ref_link: "https://t.me/твой_бот?start=r1",
-      };
-    },
-    spin({ count = 1, scale = "phone" }) {
-      if (![1, 5, 10].includes(count)) err("Можно крутить ×1, ×5 или ×10");
-      const u = users[ME]; energy(u);
-      const price = SCALES[scale].price, coinLeft = coinCap(u) - cnt("coin_spins");
-      const plan = [];
-      let e = u.energy, s = u.spins, c = u.coins;
-      for (let i = 0; i < count; i++) {
-        if (scale === "phone" && e > 0) { e--; plan.push("e"); }
-        else if (scale === "phone" && s > 0) { s--; plan.push("s"); }
-        else if (c >= price && plan.filter(x => x === "c").length < coinLeft) { c -= price; plan.push("c"); }
-        else break;
+  H.country = b => {
+    const u = S.user, code = String(b.country), t = now();
+    if (!COUNTRIES[code]) err("Такой страны нет в списке");
+    if (u.country_confirmed && code !== u.country) {
+      const after = (u.country_changed_at || 0) + C.currency.change_days * 86400;
+      if (after > t) err(`Страну можно менять раз в 30 дней. Следующая смена с ${new Date(after * 1000).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })}`, "NOT_ALLOWED_YET");
+      u.country_changed_at = t;
+    }
+    u.country = code; u.country_confirmed = true;
+    return { country: code };
+  };
+  H.settings = b => {
+    for (const k of ["fast", "no_effects", "no_upgrader"]) if (k in b) S.user.settings[k] = !!b[k];
+    return { fast: false, no_effects: false, no_upgrader: false, ...S.user.settings };
+  };
+  H.spin = async b => {
+    const lv = level(String(b.level || "common"));
+    if (!lv) err("Нет такого уровня крутки");
+    const count = +b.count || 1;
+    if (!C.counts.includes(count)) err("Можно крутить ×1, ×3, ×5 или ×10");
+    const common = lv.key === "common", u = S.user, t = now();
+    dailyVip(); promoteOverflow();
+    const [e, ets] = energy();
+    const places = place(count);
+    const useE = common ? Math.min(e, count) : 0, useA = common ? Math.min(u.attempts, count - useE) : 0, useC = count - useE - useA;
+    if (common) {
+      if (useC > coinCap() - counter("coin_spins")) err(`Спины за монеты на сегодня закончились (${coinCap()} в сутки). Бесплатные спины и попытки работают`, "DAILY_LIMIT");
+    } else {
+      const left = G.upper_levels_per_day - counter("upper_spins");
+      if (count > left) err(`Уровни выше Обычной — до ${G.upper_levels_per_day} круток в сутки. Сегодня осталось ${Math.max(left, 0)}`, "LEVEL_LIMIT");
+    }
+    const cost = useC * lv.price_cents;
+    if (cost > u.balance) err(`Не хватает ${money(cost - u.balance)}. Задания и колесо дадут монеты`, "NOT_ENOUGH_COINS", { need_cents: cost - u.balance });
+    const starter = common && count === G.starter.count && !u.starter_used;
+    if (cost && !b.confirmed && !starter && (cost >= C.confirm_from_cents || cost > u.balance * C.confirm_balance_share)) err(`Подтверди покупку: ${money(cost)}`, "CONFIRM_REQUIRED", { cost_cents: cost });
+    const p = pair();
+    let luckLeft = u.luck_left, pe = u.pity_epic, pl = u.pity_legend, gotMin = false;
+    const drops = [];
+    for (let i = 0; i < count; i++) {
+      let odds = oddsObj(lv), luck = 1;
+      if (common && luckLeft > 0) { luck = u.luck_mult; odds = applyLuck(odds, luck); luckLeft--; }
+      if (lv.pity) odds = withPity(odds, pe, pl);
+      if (starter && i === count - 1 && !gotMin) {
+        const m = G.starter.min_tier, s = sumP(odds, x => x >= m);
+        odds = Object.fromEntries(Object.entries(odds).filter(([x]) => +x >= m).map(([x, q]) => [x, q / s]));
       }
-      if (plan.length < count) { if (plan.filter(x => x === "c").length >= coinLeft) err(`Спины за монеты на сегодня закончились (${coinCap(u)} в сутки)`, "limit"); err(`Не хватает ${price * (count - plan.length) - c}`, "no_coins", { need: price * (count - plan.length) - c }); }
-      const ue = plan.filter(x => x === "e").length, us = plan.filter(x => x === "s").length, uc = plan.filter(x => x === "c").length;
-      u.energy = e; u.spins = s; u.coins = c;
-      log("coins", -uc * price, "spin"); log("spins", -us, "spin");
-      cnt("coin_spins", uc);
-      const drops = [];
-      for (let i = 0; i < count; i++) {
-        let odds = { ...SCALES[scale].odds };
-        const luck = u.luck_left > 0 ? u.luck_mult : 1;
-        if (luck > 1) { odds = applyLuck(odds, luck); u.luck_left--; }
-        const floor = u.pity_legendary + 1 >= 200 ? 4 : u.pity_epic + 1 >= 40 ? 3 : null;
-        if (floor !== null) { const f = {}; let t = 0; for (const k in odds) if (+k >= floor) { f[k] = odds[k]; t += odds[k]; } for (const k in f) f[k] /= t; odds = f; }
-        const keys = Object.keys(odds).map(Number).sort((a, b) => a - b);
-        let r = Math.random(), tier = keys[keys.length - 1];
-        for (const k of keys) { r -= odds[k]; if (r < 0) { tier = k; break; } }
-        u.pity_epic = tier >= 3 ? 0 : u.pity_epic + 1;
-        u.pity_legendary = tier >= 4 ? 0 : u.pity_legendary + 1;
-        drops.push(view(newItem(ME, tier, u.country, "spin")));
-      }
-      const before = levelFromXp(u.xp)[0];
-      u.xp += count * (scale === "premium" ? 50 : 10);
-      u.total_spins += count;
-      const today = cnt("spins", count);
-      task("spin", count);
-      return { drops, paid: { energy: ue, spins: us, coins: uc * price }, level_up: levelFromXp(u.xp)[0] > before, level: levelFromXp(u.xp)[0], break_hint: today - count < 50 && today >= 50 };
-    },
-    country({ code }) { users[ME].country = code; return { ok: true }; },
-    settings(v) { Object.keys(users[ME].settings).forEach(k => { if (k in v) users[ME].settings[k] = !!v[k]; }); return { ...users[ME].settings }; },
-    collection({ min_tier = 0, q = "", favorites = false }) {
-      const digits = String(q).replace(/\D/g, "");
-      const mine = items.filter(i => i.user_id === ME && i.status !== "gone");
-      const list = mine.filter(i => i.tier >= min_tier && (!digits || (i.op + i.sub).includes(digits)) && (!favorites || i.favorite)).sort((a, b) => b.tier - a.tier || b.price - a.price || b.id - a.id);
-      const counts = {}; mine.forEach(i => { counts[i.tier] = (counts[i.tier] || 0) + 1; });
-      return { items: list.map(view), counts, value: colValue(ME) };
-    },
-    seen() { items.forEach(i => { if (i.user_id === ME) i.is_new = false; }); return { ok: true }; },
-    favorite({ id }) { const it = items.find(i => i.id === id && i.user_id === ME); if (!it) err("Номер не найден"); it.favorite = !it.favorite; return { favorite: it.favorite }; },
-    sell({ ids }) { const list = owned(ids); const total = list.reduce((a, i) => a + i.price, 0); list.forEach(i => { i.status = "gone"; }); users[ME].coins += total; log("coins", total, "sell"); task("sell", list.length); return { coins: total, sold: list.length }; },
-    bulk_preview({ max_tier }) { const m = Math.min(max_tier, 2); const l = items.filter(i => i.user_id === ME && i.status === "owned" && !i.favorite && i.tier <= m); return { count: l.length, coins: l.reduce((a, i) => a + i.price, 0), max_tier: m }; },
-    bulk_sell({ max_tier }) { const m = Math.min(max_tier, 2); const l = items.filter(i => i.user_id === ME && i.status === "owned" && !i.favorite && i.tier <= m); if (!l.length) err("Нечего продавать: избранное не продаётся пачкой"); return H.sell({ ids: l.map(i => i.id) }); },
-    contract({ ids }) {
-      const list = owned(ids);
-      if (list.length !== 5) err("Нужно ровно 5 номеров одной ступени");
-      if (new Set(list.map(i => i.tier)).size !== 1) err("Все 5 номеров должны быть одной ступени");
-      if (list[0].tier > 6) err("Эту ступень нельзя улучшить");
-      list.forEach(i => { i.status = "gone"; });
-      return { item: view(newItem(ME, list[0].tier + 1, pick(list).country, "contract")) };
-    },
-    "upgrade/quote"({ ids = [], coins = 0, target }) {
-      const u = users[ME];
-      if (u.settings.no_upgrader) err("Апгрейдер выключен в настройках");
-      if (ids.length > 3) err("Не больше 3 номеров за раз");
-      const list = ids.length ? owned(ids) : [];
-      if (coins > u.coins) err("Не хватает монет");
-      const stake = list.reduce((a, i) => a + i.price, 0) + coins;
-      if (stake <= 0) err("Положи номер или монеты");
-      if (PRICES[target] <= stake) err("Цель должна стоить дороже ставки");
-      if (stake > (colValue(ME) + u.coins) / 2) err("За раз можно поставить не больше половины стоимости коллекции");
-      const base = stake / PRICES[target] * 0.85;
-      return { coins, stake, target, target_price: PRICES[target], chance: Math.min(0.9, base + u.upgrade_bonus), base_chance: base, bonus: u.upgrade_bonus, left_today: 10 - cnt("upgrades") };
-    },
-    upgrade(b) {
-      const q = H["upgrade/quote"](b), u = users[ME];
-      if (q.left_today <= 0) err("На сегодня апгрейды закончились (10 в сутки)");
-      cnt("upgrades", 1);
-      const list = (b.ids || []).map(id => items.find(i => i.id === id));
-      list.forEach(i => { i.status = "gone"; });
-      u.coins -= q.coins; log("coins", -q.coins, "upgrade");
-      const roll = Math.random(), success = roll < q.chance;
-      const res = { success, chance: q.chance, roll };
-      if (success) { res.item = view(newItem(ME, b.target, list.length ? pick(list).country : "RU", "upgrade")); u.upgrade_bonus = 0; }
-      else { const parts = Math.floor(q.stake * 0.1); u.coins += parts; log("coins", parts, "upgrade_parts"); u.upgrade_bonus += 0.03; res.parts = parts; res.next_bonus = u.upgrade_bonus; }
-      return res;
-    },
-    market({ min_tier = 0, sort = "new" }) {
-      const l = lots.filter(x => x.status === "active").map(x => ({ x, it: items.find(i => i.id === x.item_id) })).filter(o => o.it.tier >= min_tier);
-      l.sort(sort === "cheap" ? (a, b) => a.x.price - b.x.price : sort === "rare" ? (a, b) => b.it.tier - a.it.tier || b.x.price - a.x.price : (a, b) => b.x.id - a.x.id);
-      return { lots: l.map(lotView), fee: 0.1 };
-    },
-    "market/mine"() {
-      const mine = lots.filter(x => x.seller_id === ME || x.buyer_id === ME).sort((a, b) => b.id - a.id).map(x => ({ ...lotView({ x, it: items.find(i => i.id === x.item_id) }), lot_status: x.status, side: x.seller_id === ME ? "sell" : "buy" }));
-      return { active: mine.filter(l => l.lot_status === "active" && l.side === "sell"), deals: mine.filter(l => l.lot_status === "sold") };
-    },
-    "market/list"({ id, price }) {
-      const it = owned([id])[0];
-      if (price < Math.floor(it.price * .5) || price > Math.floor(it.price * 1.5)) err("Цена вне вилки 50–150%");
-      it.status = "listed";
-      const lot = { id: nextLot++, item_id: it.id, seller_id: ME, price, status: "active", created_at: now(), expires_at: now() + 3 * DAY };
-      lots.push(lot);
-      // в демо кто-то из соседей купит лот через 20 секунд, чтобы было видно, как приходит сделка
-      setTimeout(() => { if (lot.status === "active") { lot.status = "sold"; lot.buyer_id = 100 + rnd(7); it.user_id = lot.buyer_id; it.status = "owned"; const get = price - Math.floor(price * .1); users[ME].coins += get; log("coins", get, "market_sell"); } }, 20000);
-      return { lot_id: lot.id, you_get: price - Math.floor(price * .1) };
-    },
-    "market/cancel"({ lot_id }) { const l = lots.find(x => x.id === lot_id && x.seller_id === ME && x.status === "active"); if (!l) err("Лот уже закрыт"); l.status = "cancelled"; items.find(i => i.id === l.item_id).status = "owned"; return { ok: true }; },
-    "market/buy"({ lot_id }) {
-      const l = lots.find(x => x.id === lot_id && x.status === "active"), u = users[ME];
-      if (!l) err("Этот лот уже купили или сняли");
-      if (l.seller_id === ME) err("Нельзя купить свой лот");
-      if (u.coins < l.price) err(`Не хватает ${l.price - u.coins}`, "no_coins", { need: l.price - u.coins });
-      u.coins -= l.price; log("coins", -l.price, "market_buy");
-      l.status = "sold"; l.buyer_id = ME;
-      const it = items.find(i => i.id === l.item_id); it.user_id = ME; it.status = "owned"; it.is_new = true; it.favorite = false; it.source = "market";
-      return { item: view(it) };
-    },
-    wheel() {
-      if (cnt("wheel")) err("Колесо уже крутил сегодня. Следующее завтра", "used");
-      let r = Math.random(), idx = WHEEL.length - 1;
-      for (let i = 0; i < WHEEL.length; i++) { r -= WHEEL[i].p; if (r < 0) { idx = i; break; } }
-      const s = WHEEL[idx], u = users[ME];
-      cnt("wheel", 1); u.coins += s.coins || 0; u.spins += s.spins || 0; log("coins", s.coins || 0, "wheel"); log("spins", s.spins || 0, "wheel"); task("wheel");
-      return { index: idx, label: s.label, coins: s.coins || 0, spins: s.spins || 0 };
-    },
-    gift() {
-      const u = users[ME], today = dayKey(now()), yesterday = dayKey(now() - DAY);
-      if (u.gift_day === today) err("Подарок уже забран. Возвращайся завтра", "used");
-      const streak = u.gift_day === yesterday ? (u.gift_streak % 7) + 1 : 1, r = GIFT[streak - 1];
-      const coins = typeof r === "number" ? r : r.coins, spins = typeof r === "number" ? 0 : r.spins;
-      u.gift_day = today; u.gift_streak = streak; u.coins += coins; u.spins += spins; log("coins", coins, "gift"); log("spins", spins, "gift");
-      return { day: streak, coins, spins };
-    },
-    task({ key }) {
-      const t = TASKS.find(x => x.key === key);
-      if (!t) err("Такого задания сегодня нет");
-      if (cnt("claimed:" + key)) err("Награда уже получена");
-      if (cnt("task:" + key) < t.target) err("Задание ещё не выполнено");
-      cnt("claimed:" + key, 1); users[ME].coins += t.coins; log("coins", t.coins, "task");
-      return { coins: t.coins };
-    },
-    friends() {
-      return { count: 2, required_spins: 10, friend_spins: 3, ref_link: "https://t.me/твой_бот?start=r1",
-        tiers: [{ count: 1, title: "3 спина" }, { count: 5, title: "300 монет и рамка профиля" }, { count: 10, title: "1 000 монет и эффект анимации" }, { count: 25, title: "Значок «Амбассадор»" }],
-        friends: [{ name: "Аня", spins: 10, qualified: true }, { name: "Миша", spins: 10, qualified: true }, { name: "Лера", spins: 4, qualified: false }] };
-    },
-    rating({ kind = "value", scope = "all" }) {
-      let ids = Object.keys(users).map(Number);
-      if (scope === "friends") ids = [ME, 100, 101, 102];
-      let rows = ids.map(id => {
-        const mine = items.filter(i => i.user_id === id && i.status !== "gone");
-        if (!mine.length) return null;
-        const best = mine.reduce((a, i) => (i.tier > a.tier || (i.tier === a.tier && i.price > a.price)) ? i : a);
-        return { id, name: users[id].first_name, score: kind === "best" ? best.tier * 1e9 + best.price : colValue(id), best };
-      }).filter(Boolean).sort((a, b) => b.score - a.score);
-      const out = rows.map((r, i) => ({ pos: i + 1, id: r.id, name: r.name, me: r.id === ME, ...(kind === "best" ? { item: view(r.best) } : { value: r.score }) }));
-      return { top: out.slice(0, 50), me: out.find(x => x.me) || null };
-    },
-    history() { return { items: ledger.slice(0, 20) }; },
-    shop() { return { enabled: true, products: Object.entries(PRODUCTS).map(([key, p]) => ({ key, ...p })), month_spent: starsSpent, month_cap: 500, spins_stock_cap: 100 }; },
-    "shop/invoice"({ key }) {
-      const p = PRODUCTS[key], u = users[ME];
-      if (!p) err("Нет такого товара");
-      if (starsSpent + p.stars > 500) err(`Месячный лимит покупок 500 ⭐. Осталось ${500 - starsSpent} ⭐`, "cap");
-      if (p.spins && u.spins + p.spins > 100) err("Запас попыток не больше 100. Сначала потрать текущие", "stock");
-      if (p.luck && u.luck_left > 0 && u.luck_mult > p.luck) err("Уже действует более сильная удача", "luck_active");
-      return { demo: true };
-    },
-    "shop/demo_pay"({ key }) {
-      const p = PRODUCTS[key], u = users[ME];
-      starsSpent += p.stars;
-      if (p.spins) { u.spins += p.spins; log("spins", p.spins, "purchase"); }
-      if (p.luck) { u.luck_mult = p.luck; u.luck_left = 10; }
-      return { granted: p.title };
-    },
+      const nonce = ++p.nonce;
+      const u0 = await roll(p.server_seed, p.client_seed, nonce, 0), u1 = await roll(p.server_seed, p.client_seed, nonce, 1);
+      const tier = pickTier(u0, odds);
+      gotMin = gotMin || tier >= G.starter.min_tier;
+      const it = issue(1, tier, u1, useC || !common ? "spin" : "free", places[i]);
+      S.drops.push({ id: S.drops.length + 1, item_id: it.id, action: "spin", level: lv.key, tier, odds, u0, seed_id: p.id, server_hash: p.server_hash, client_seed: p.client_seed, nonce, created_at: t });
+      if (tier >= EPIC) S.feed.push({ user_id: 1, item_id: it.id, created_at: t });
+      if (lv.pity) { pe = tier >= EPIC ? 0 : pe + 1; pl = tier >= LEGENDARY ? 0 : pl + 1; }
+      drops.push({ ...view(it), fair: { server_hash: p.server_hash, client_seed: p.client_seed, nonce } });
+    }
+    const xpGain = count * Math.max(10, Math.floor(lv.price_cents / 10000));
+    const before = levelFromXp(u.xp)[0];
+    u.balance -= cost; u.attempts -= useA; u.energy = e - useE; u.energy_ts = ets;
+    u.pity_epic = pe; u.pity_legend = pl; u.luck_left = luckLeft; u.xp += xpGain; u.total_spins += count;
+    if (starter) u.starter_used = true;
+    ledger("rub", -cost, "spin_" + lv.key); ledger("attempts", -useA, "spin");
+    if (common && useC) counter("coin_spins", useC);
+    if (!common) counter("upper_spins", count);
+    const spinsToday = counter("spins", count);
+    taskEvent("spin", count);
+    const after = levelFromXp(u.xp)[0];
+    return { drops, level: lv.key, paid: { energy: useE, attempts: useA, cents: cost }, starter, overflow: places.filter(x => x === "overflow").length, level_up: after > before, player_level: after, break_hint: spinsToday - count < G.break_hint_spins && G.break_hint_spins <= spinsToday };
   };
-  function lotView({ x, it }) { return { ...view(it), lot_id: x.id, lot_price: x.price, seller_id: x.seller_id, seller: users[x.seller_id].first_name, expires_at: x.expires_at / 1000 }; }
+  H.inventory = b => {
+    promoteOverflow();
+    const minTier = +b.min_tier || 0, digits = String(b.q || "").replace(/\D/g, "");
+    let rows = mine(b.overflow ? ["overflow"] : ["free", "listed"]).filter(i => i.tier >= minTier);
+    rows.sort(b.sort === "new" ? (x, y) => y.id - x.id : (x, y) => y.tier - x.tier || y.id - x.id);
+    rows = rows.filter(r => (!digits || (r.op + r.sub).includes(digits)) && (!b.favorites || r.favorite));
+    const all = mine(["free", "listed", "overflow"]), counts = {};
+    all.forEach(i => { counts[i.tier] = (counts[i.tier] || 0) + 1; });
+    const weekAgo = now() - 7 * 86400;
+    return { items: rows.map(view), counts, value_cents: collectionValue(1), week_cents: all.filter(i => i.created_at >= weekAgo).reduce((a, i) => a + LAD[i.tier], 0), slots: slots() };
+  };
+  const myItem = id => { const it = S.items.find(i => i.id === +id && i.user_id === 1 && i.state !== "gone"); if (!it) err("Номер не найден", "CONFLICT"); return it; };
+  H.item = b => view(myItem(b.id));
+  H.seen = () => { mine(["free", "listed", "overflow"]).forEach(i => { i.is_new = false; }); return { ok: true }; };
+  H.favorite = b => { const it = myItem(b.id); it.favorite = !it.favorite; return { favorite: it.favorite }; };
+  H.lock = b => {
+    const it = myItem(b.id), locked = b.locked !== false;
+    if (!locked && it.locked && !b.confirm) err("Снять замок? Номер снова можно будет продать", "CONFIRM_REQUIRED");
+    it.locked = locked;
+    if (locked) taskEvent("lock");
+    return { locked };
+  };
+  H.showcase = b => { const ids = (b.ids || []).map(Number).slice(0, 3); if (ids.length) owned(ids, ["free", "listed"]); S.user.showcase = ids; return { showcase: ids }; };
+  H.sell = b => {
+    const items = owned(b.ids || [], ["free", "overflow"]);
+    if (items.some(i => i.locked)) err("Номер под замком. Сними замок, чтобы продать", "ITEM_LOCKED");
+    const top = Math.max(...items.map(i => i.tier));
+    if (top >= LEGENDARY && items.length > 1) err("Легендарные и выше продаются только по одному");
+    if (top >= EPIC && !b.confirmed) err("Подтверди продажу", "CONFIRM_REQUIRED");
+    const total = items.reduce((a, i) => a + Math.floor(LAD[i.tier] * C.sell_system_pct / 100), 0);
+    items.forEach(i => { i.state = "gone"; i.gone_reason = "sold"; });
+    const t = now(), sale = { id: S.sales.length + 1, item_ids: items.map(i => i.id), amount_cents: total, created_at: t, undo_until: t + G.undo_sell.minutes * 60, undone: false };
+    S.sales.push(sale);
+    add(total, 0, "sell");
+    taskEvent("sell", items.length);
+    promoteOverflow();
+    return { sale_id: sale.id, cents: total, sold: items.length, undo_until: sale.undo_until };
+  };
+  H["sales/undo"] = b => {
+    const sale = S.sales.find(s => s.id === +b.sale_id);
+    if (!sale || sale.undone) err("Эту продажу уже отменили", "CONFLICT");
+    if (sale.undo_until < now()) err("Отменить можно только в течение 10 минут", "NOT_ALLOWED_YET");
+    if (counter("undo") >= G.undo_sell.per_day) err("Отменять продажу можно 5 раз в сутки", "DAILY_LIMIT");
+    if (S.user.balance < sale.amount_cents) err(`Не хватает ${money(sale.amount_cents - S.user.balance)}, чтобы вернуть номера`, "NOT_ENOUGH_COINS");
+    const places = place(sale.item_ids.length);
+    sale.item_ids.forEach((id, k) => {
+      const it = S.items.find(i => i.id === id && i.gone_reason === "sold");
+      if (it) { it.state = places[k]; it.gone_reason = null; it.overflow_until = places[k] === "overflow" ? now() + C.inventory.overflow_hours * 3600 : null; }
+    });
+    sale.undone = true;
+    add(-sale.amount_cents, 0, "sell_undo");
+    counter("undo", 1);
+    return { restored: sale.item_ids.length };
+  };
+  H["sell/quote"] = b => {
+    let rows = mine(["free", "overflow"]).filter(i => !i.locked && i.tier < LEGENDARY);
+    rows = b.mode === "below_rare" || !b.mode ? rows.filter(i => i.tier < RARE) : rows.filter(i => LAD[i.tier] < +b.max_cents);
+    return { ids: rows.map(i => i.id), count: rows.length, cents: rows.reduce((a, i) => a + Math.floor(LAD[i.tier] * C.sell_system_pct / 100), 0) };
+  };
+  H.contract = async b => {
+    const cc = C.contracts, items = owned(b.ids || []);
+    if (items.length !== cc.inputs) err(`Нужно ровно ${cc.inputs} номеров одной ступени`);
+    if (items.some(i => i.locked)) err("Номера под замком в «5 в 1» не попадают", "ITEM_LOCKED");
+    const tiers = new Set(items.map(i => i.tier));
+    if (tiers.size !== 1) err("Все 5 номеров должны быть одной ступени");
+    const tier = [...tiers][0];
+    if (tier > SECRET) err("Эту ступень нельзя улучшить");
+    items.forEach(i => { i.state = "gone"; i.gone_reason = "contract"; });
+    const p = pair(), nonce = ++p.nonce;
+    const u0 = await roll(p.server_seed, p.client_seed, nonce, 0), u1 = await roll(p.server_seed, p.client_seed, nonce, 1);
+    const guaranteed = tier <= cc.guaranteed_up_to_tier, success = guaranteed || u0 < cc.success_pct / 100;
+    const it = issue(1, success ? tier + 1 : tier, u1, "contract");
+    S.drops.push({ id: S.drops.length + 1, item_id: it.id, action: "contract", tier: it.tier, odds: { success: guaranteed ? 1 : cc.success_pct / 100 }, u0, seed_id: p.id, server_hash: p.server_hash, client_seed: p.client_seed, nonce, created_at: now() });
+    taskEvent("contract");
+    return { success, guaranteed, item: view(it), chance: guaranteed ? 1 : cc.success_pct / 100, roll: u0 };
+  };
+  function upgradeCalc(b) {
+    const up = C.upgrader, u = S.user, ids = (b.ids || []).map(Number);
+    if (u.settings.no_upgrader) err("Улучшение выключено в настройках");
+    if (ids.length > up.max_items) err(`Не больше ${up.max_items} номеров за раз`);
+    const cents = Math.max(0, Math.floor(+b.cents || 0));
+    const items = ids.length ? owned(ids) : [];
+    if (items.some(i => i.locked)) err("Номера под замком нельзя улучшать", "ITEM_LOCKED");
+    if (cents > u.balance) err(`Не хватает ${money(cents - u.balance)}`, "NOT_ENOUGH_COINS", { need_cents: cents - u.balance });
+    const stake = items.reduce((a, i) => a + LAD[i.tier], 0) + cents, target = +b.target;
+    if (stake <= 0) err("Положи номер или монеты");
+    if (!(target >= 0 && target <= SECRET)) err("Такую цель нельзя выбрать");
+    if (LAD[target] <= stake) err("Цель должна стоить дороже ставки");
+    if (stake > (collectionValue(1) + u.balance) * up.max_share_of_collection) err("За раз можно поставить не больше половины стоимости коллекции");
+    const base = stake / LAD[target] * up.k, r4 = x => Math.round(x * 1e4) / 1e4;
+    return { items, cents, stake_cents: stake, target, target_cents: LAD[target], chance: r4(Math.min(up.max_chance_pct / 100, base + u.upgrade_bonus)), base_chance: r4(base), bonus: r4(u.upgrade_bonus), left_today: up.per_day - counter("upgrades"), confirm: items.some(i => i.tier >= up.confirm_from_tier) };
+  }
+  H["upgrade/quote"] = b => { const q = upgradeCalc(b); delete q.items; return q; };
+  H.upgrade = async b => {
+    const q = upgradeCalc(b), up = C.upgrader;
+    if (b.quote_chance != null && Math.abs(+b.quote_chance - q.chance) > 1e-6) err("Шанс изменился, посмотри ещё раз", "CONFIG_CHANGED");
+    if (q.left_today <= 0) err("На сегодня улучшения закончились (10 в сутки)", "DAILY_LIMIT");
+    counter("upgrades", 1);
+    q.items.forEach(i => { i.state = "gone"; i.gone_reason = "upgrade"; });
+    add(-q.cents, 0, "upgrade");
+    const p = pair(), nonce = ++p.nonce;
+    const u0 = await roll(p.server_seed, p.client_seed, nonce, 0), success = u0 < q.chance;
+    const res = { success, chance: q.chance, roll: u0 };
+    if (success) {
+      const it = issue(1, q.target, await roll(p.server_seed, p.client_seed, nonce, 1), "upgrade", place(1)[0]);
+      res.item = view(it);
+      S.user.upgrade_bonus = 0;
+      S.drops.push({ id: S.drops.length + 1, item_id: it.id, action: "upgrade", tier: q.target, odds: { success: q.chance }, u0, seed_id: p.id, server_hash: p.server_hash, client_seed: p.client_seed, nonce, created_at: now() });
+    } else {
+      const parts = Math.floor(q.stake_cents * up.fail_parts_pct / 100);
+      add(parts, 0, "upgrade_parts");
+      S.user.upgrade_bonus += up.fail_bonus_pct / 100;
+      Object.assign(res, { parts_cents: parts, next_bonus: Math.round((q.bonus + up.fail_bonus_pct / 100) * 1e4) / 1e4 });
+    }
+    promoteOverflow();
+    return res;
+  };
 
+  // ---------- рынок ----------
+  const nameOf = id => id === 1 ? S.user.name : (S.others.find(o => o.id === id) || {}).name || "Игрок";
+  function lotView(l) {
+    const it = S.items.find(i => i.id === l.item_id);
+    return { ...view(it), lot_id: l.id, lot_cents: l.price_cents, seller_id: l.seller_id, seller: nameOf(l.seller_id), expires_at: l.expires_at, lot_status: l.status, buyer_id: l.buyer_id || null, fee_cents: l.fee_cents || null };
+  }
+  function expireLots() {
+    const t = now();
+    S.lots.filter(l => l.status === "active" && l.expires_at < t).forEach(l => { l.status = "expired"; const it = S.items.find(i => i.id === l.item_id); if (it && it.state === "listed") it.state = "free"; });
+  }
+  H.market = b => {
+    expireLots(); taskEvent("market");
+    const digits = String(b.q || "").replace(/\D/g, "");
+    let lots = S.lots.filter(l => l.status === "active").map(lotView).filter(l => l.tier.idx >= (+b.min_tier || 0) && (!digits || (l.op + l.sub).includes(digits)));
+    const sorts = { new: (x, y) => y.lot_id - x.lot_id, cheap: (x, y) => x.lot_cents - y.lot_cents, rare: (x, y) => y.tier.idx - x.tier.idx || y.lot_cents - x.lot_cents };
+    lots.sort(sorts[b.sort] || sorts.new);
+    return { lots, fee_pct: vip() ? C.market.fee_vip_pct : C.market.fee_pct };
+  };
+  H["market/mine"] = () => {
+    const views = S.lots.filter(l => l.seller_id === 1 || l.buyer_id === 1).sort((a, b) => b.id - a.id).map(l => ({ ...lotView(l), side: l.seller_id === 1 ? "sell" : "buy" }));
+    return { active: views.filter(v => v.lot_status === "active" && v.side === "sell"), deals: views.filter(v => v.lot_status === "sold") };
+  };
+  H["market/list"] = b => {
+    const m = C.market, t = now();
+    if (t - S.user.created_at < m.new_account_hours * 3600) err(`Торговать можно через ${m.new_account_hours} ч после первого входа`, "NOT_ALLOWED_YET");
+    const it = owned([b.id])[0];
+    if (it.hold_until && it.hold_until > t) err("Купленный номер можно выставить через 24 часа", "ITEM_BUSY");
+    if (S.lots.filter(l => l.seller_id === 1 && l.status === "active").length >= m.lots_max) err(`Не больше ${m.lots_max} лотов одновременно`, "DAILY_LIMIT");
+    const ref = LAD[it.tier], lo = Math.floor(ref * m.band_pct[0] / 100), hi = Math.floor(ref * m.band_pct[1] / 100), price = Math.floor(+b.price_cents);
+    if (!(price >= lo && price <= hi)) err(`Цена от ${money(lo)} до ${money(hi)}`, "PRICE_OUT_OF_BAND", { min_cents: lo, max_cents: hi });
+    it.state = "listed";
+    const lot = { id: S.lots.length + 1, item_id: it.id, seller_id: 1, price_cents: price, created_at: t, expires_at: t + m.lot_days * 86400, status: "active" };
+    S.lots.push(lot);
+    const lotId = lot.id;
+    // в демо кто-нибудь купит лот через полминуты, если цена не выше опорной
+    if (price <= ref) setTimeout(() => {
+      const lot = S.lots.find(l => l.id === lotId), it = lot && S.items.find(i => i.id === lot.item_id);
+      if (!lot || lot.status !== "active" || !it) return;
+      const fee = Math.floor(price * (vip() ? m.fee_vip_pct : m.fee_pct) / 100), buyer = S.others[(lot.id * 3) % S.others.length];
+      add(price, 0, "market_sale"); add(-fee, 0, "market_fee");
+      Object.assign(lot, { status: "sold", buyer_id: buyer.id, fee_cents: fee, closed_at: now() });
+      Object.assign(it, { user_id: buyer.id, state: "free" });
+      save();
+    }, 30000);
+    return { lot_id: lot.id, you_get_cents: price - Math.floor(price * (vip() ? m.fee_vip_pct : m.fee_pct) / 100) };
+  };
+  H["market/cancel"] = b => {
+    const lot = S.lots.find(l => l.id === +b.lot_id && l.seller_id === 1 && l.status === "active");
+    if (!lot) err("Лот уже закрыт", "CONFLICT");
+    lot.status = "cancelled";
+    S.items.find(i => i.id === lot.item_id).state = "free";
+    return { ok: true };
+  };
+  H["market/buy"] = b => {
+    expireLots();
+    const m = C.market, t = now(), lot = S.lots.find(l => l.id === +b.lot_id && l.status === "active");
+    if (!lot) err("Этот лот уже купили или сняли", "CONFLICT");
+    if (lot.seller_id === 1) err("Это твой лот");
+    if (S.user.balance < lot.price_cents) err(`Не хватает ${money(lot.price_cents - S.user.balance)}`, "NOT_ENOUGH_COINS", { need_cents: lot.price_cents - S.user.balance });
+    const pl = place(1)[0];
+    add(-lot.price_cents, 0, "market_buy");
+    Object.assign(lot, { status: "sold", buyer_id: 1, fee_cents: Math.floor(lot.price_cents * m.fee_pct / 100), closed_at: t });
+    const it = S.items.find(i => i.id === lot.item_id);
+    Object.assign(it, { user_id: 1, state: pl, is_new: true, favorite: false, locked: false, hold_until: t + m.hold_hours * 3600, overflow_until: pl === "overflow" ? t + C.inventory.overflow_hours * 3600 : null });
+    return { item: view(it) };
+  };
+
+  // ---------- колёса, подарок, задания ----------
+  function pick(sectors) { let x = Math.random(); for (let i = 0; i < sectors.length; i++) { x -= sectors[i].p; if (x < 0) return i; } return sectors.length - 1; }
+  H.wheel = async b => {
+    const t = now(), weekly = b.kind === "weekly";
+    let sectors;
+    if (weekly) {
+      if (counter("wheel_weekly", 0, weekKey(t))) err("Недельное колесо уже крутил на этой неделе", "DAILY_LIMIT");
+      if (taskDays() < G.wheel_weekly.unlock_days) err("Недельное колесо открывается за задания в 5 днях из 7", "NOT_ALLOWED_YET");
+      sectors = G.wheel_weekly.sectors; counter("wheel_weekly", 1, weekKey(t));
+    } else {
+      if (counter("wheel")) err("Колесо уже крутил сегодня. Следующее завтра", "DAILY_LIMIT");
+      sectors = D.wheel_daily; counter("wheel", 1); taskEvent("wheel");
+    }
+    const idx = pick(sectors), s = sectors[idx];
+    const out = { index: idx, label: s.label, cents: s.cents || 0, attempts: s.attempts || 0 };
+    add(s.cents || 0, s.attempts || 0, weekly ? "wheel_weekly" : "wheel_daily");
+    if (s.item_min_tier != null) {
+      const common = oddsObj(C.levels[0]), m = s.item_min_tier, tot = sumP(common, x => x >= m);
+      const odds = Object.fromEntries(Object.entries(common).filter(([x]) => +x >= m).map(([x, q]) => [x, q / tot]));
+      const p = pair(), nonce = ++p.nonce;
+      const tier = pickTier(await roll(p.server_seed, p.client_seed, nonce, 0), odds);
+      out.item = view(issue(1, tier, await roll(p.server_seed, p.client_seed, nonce, 1), "wheel_weekly", place(1)[0]));
+    }
+    if (s.badge && !S.user.badges.includes(s.badge)) { S.user.badges.push(s.badge); out.badge = s.badge; }
+    return out;
+  };
+  H.gift = () => {
+    const u = S.user, t = now(), today = dayKey(t), yesterday = dayKey(t - 86400);
+    if (u.gift_day === today) err("Подарок уже забран. Возвращайся завтра", "DAILY_LIMIT");
+    const streak = u.gift_day === yesterday ? (u.gift_streak % 7) + 1 : 1, r = C.gift[streak - 1];
+    const cents = typeof r === "number" ? r : r.cents || 0, attempts = typeof r === "number" ? 0 : r.attempts || 0;
+    u.gift_day = today; u.gift_streak = streak;
+    add(cents, attempts, "gift");
+    return { day: streak, cents, attempts };
+  };
+  H.task = b => {
+    const key = String(b.key), t = now(), w = G.weekly_tasks.find(x => x.key === key);
+    if (w) {
+      const week = weekKey(t);
+      if (counter("wclaimed:" + key, 0, week)) err("Награда уже получена", "CONFLICT");
+      if (counter("wtask:" + key, 0, week) < w.target) err("Задание ещё не выполнено");
+      counter("wclaimed:" + key, 1, week); add(w.cents, 0, "task_weekly");
+      if (w.badge && !S.user.badges.includes(w.badge)) S.user.badges.push(w.badge);
+      return { cents: w.cents, badge: w.badge };
+    }
+    const task = todayTasks(t).find(x => x.key === key);
+    if (!task) err("Такого задания сегодня нет");
+    if (counter("claimed:" + key)) err("Награда уже получена", "CONFLICT");
+    if (counter("task:" + key) < task.target) err("Задание ещё не выполнено");
+    counter("claimed:" + key, 1); counter("tickets", G.tickets_per_task); add(task.cents, 0, "task");
+    return { cents: task.cents, tickets: G.tickets_per_task };
+  };
+  H.raffle = async () => {
+    const t = now(), today = dayKey(t), row = await raffleRow(today), last = S.raffle[dayKey(t - 86400)];
+    return {
+      day: today, hour_msk: G.raffle.hour_msk, server_hash: row.server_hash, drawn: row.drawn, my_tickets: counter("tickets"),
+      total_tickets: counter("tickets") + 37, prizes: G.raffle.prizes, winners: row.winners,
+      last: last ? { day: dayKey(t - 86400), server_seed: last.server_seed, server_hash: last.server_hash, winners: last.winners } : null,
+    };
+  };
+
+  // ---------- честная игра ----------
+  H.fair = () => {
+    const p = pair();
+    const rolls = [...S.drops].reverse().slice(0, 50).map(d => {
+      const s = S.seeds.find(x => x.id === d.seed_id), it = S.items.find(i => i.id === d.item_id);
+      return { id: d.id, action: d.action, level: d.level || null, tier: d.tier, u0: d.u0, odds: d.odds, server_hash: d.server_hash, client_seed: d.client_seed, nonce: d.nonce, server_seed: s && s.revealed_at ? s.server_seed : null, number: it ? formatNumber(it.country, it.op, it.sub) : null, created_at: d.created_at };
+    });
+    return { server_hash: p.server_hash, client_seed: p.client_seed, nonce: p.nonce, rolls };
+  };
+  H["fair/rotate"] = async b => {
+    const client = String(b.client_seed || "").trim() || randHex(8);
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(client)) err("Client seed: до 32 латинских букв, цифр, «-» или «_»");
+    const old = pair();
+    old.active = false; old.revealed_at = now();
+    const p = await newPair(client);
+    return { revealed: { server_seed: old.server_seed, server_hash: old.server_hash, client_seed: old.client_seed, nonce: old.nonce }, server_hash: p.server_hash, client_seed: p.client_seed, nonce: 0 };
+  };
+
+  // ---------- друзья, рейтинг, лента ----------
+  H.friends = () => {
+    const req = G.referral.required_spins;
+    return { count: S.user.ref_count, required_spins: req, friend_attempts: G.referral.friend_attempts, tiers: G.referral.tiers, ref_link: "https://t.me/твой_бот?start=r1",
+      friends: S.others.filter(o => o.friend).map(o => ({ name: o.name, spins: Math.min(o.spins, req), qualified: o.spins >= req })) };
+  };
+  H.rating = b => {
+    taskEvent("rating");
+    const board = b.board || "collection", scope = b.scope || "friends";
+    let rows = [{ id: 1, name: S.user.name }, ...S.others.map(o => ({ id: o.id, name: o.name, friend: o.friend, o }))];
+    if (scope === "friends") rows = rows.filter(r => r.id === 1 || r.friend);
+    rows.forEach(r => {
+      if (board === "level") { r.value = levelFromXp(r.id === 1 ? S.user.xp : r.o.xp)[0]; r.score = r.value; }
+      else if (board === "rarest") {
+        const best = S.items.filter(i => i.user_id === r.id && i.state !== "gone").sort((x, y) => y.tier - x.tier || y.id - x.id)[0];
+        r.item = best; r.score = best ? best.tier * 1e9 + best.id : -1;
+      } else { r.value_cents = collectionValue(r.id) + (r.o ? r.o.extra : 0); r.score = r.value_cents; }
+    });
+    rows = rows.filter(r => r.score >= 0).sort((x, y) => y.score - x.score);
+    const out = rows.map((r, i) => {
+      const e = { pos: i + 1, id: r.id, name: r.name, me: r.id === 1 };
+      if (board === "rarest") e.item = view(r.item); else if (board === "level") e.level = r.value; else e.value_cents = r.value_cents;
+      return e;
+    });
+    return { board, scope, top: out.slice(0, 50), me: out.find(e => e.me) || null };
+  };
+  H.feed = () => ({
+    items: [...S.feed].sort((a, b) => b.created_at - a.created_at).slice(0, 20).map(f => {
+      const it = S.items.find(i => i.id === f.item_id), v = view(it), o = S.others.find(x => x.id === f.user_id);
+      return { name: nameOf(f.user_id), friend: !!(o && o.friend), me: f.user_id === 1, number: v.number, flag: v.flag, tier: v.tier, at: f.created_at };
+    }),
+  });
+  H.history = () => ({ items: [...S.ledger].reverse().slice(0, 20) });
+
+  // ---------- магазин (в демо без оплаты) ----------
+  const monthSpent = () => { const d = new Date((now() + MSK) * 1000); const m0 = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) / 1000 - MSK; return S.payments.filter(p => p.created_at >= m0).reduce((a, p) => a + p.stars, 0); };
+  H.shop = () => {
+    const s = G.shop;
+    return { enabled: true, products: Object.entries(s.products).filter(([, p]) => !(p.once && S.user.start_pack)).map(([key, p]) => ({ key, ...p })), month_spent: monthSpent(), month_cap: s.monthly_cap_stars, warn_at_pct: s.warn_at_pct, attempts_stock_cap: s.attempts_stock_cap };
+  };
+  function checkPurchase(key) {
+    const s = G.shop, p = s.products[key], u = S.user;
+    if (!p) err("Нет такого товара");
+    const spent = monthSpent();
+    if (spent + p.stars > s.monthly_cap_stars) err(`Месячный лимит покупок ${s.monthly_cap_stars} ⭐, осталось ${s.monthly_cap_stars - spent} ⭐. Повысить можно через /paysupport`, "STARS_MONTH_CAP");
+    if (p.once && u.start_pack) err("Набор «Старт» можно купить один раз", "NOT_ALLOWED_YET");
+    if (p.attempts) {
+      if (u.attempts + p.attempts > s.attempts_stock_cap) err(`Запас попыток не больше ${s.attempts_stock_cap}. Сначала потрать текущие`, "DAILY_LIMIT");
+      if (counter("bought_attempts") + p.attempts > s.attempts_daily_cap) err(`За сутки можно купить не больше ${s.attempts_daily_cap} попыток`, "DAILY_LIMIT");
+    }
+    if (p.luck) {
+      if (u.luck_left > 0 && u.luck_mult > p.luck) err("Уже действует более сильная удача", "CONFLICT");
+      if (p.luck >= 2 && counter("luck2") >= s.luck2_daily) err(`Удачу ×2 можно купить не больше ${s.luck2_daily} раз в сутки`, "DAILY_LIMIT");
+    }
+    if (p.slots && u.slots_bought >= s.slots_max_buys) err("Места можно докупить не больше 3 раз", "DAILY_LIMIT");
+    return p;
+  }
+  H["shop/invoice"] = b => { checkPurchase(String(b.key)); return { demo: true }; };
+  H["shop/demo_pay"] = b => {
+    const key = String(b.key), p = checkPurchase(key), u = S.user, t = now();
+    S.payments.push({ product: key, stars: p.stars, created_at: t });
+    if (p.attempts) { add(0, p.attempts, "purchase"); counter("bought_attempts", p.attempts); }
+    if (p.luck) { u.luck_mult = p.luck; u.luck_left = G.shop.luck_spins; if (p.luck >= 2) counter("luck2", 1); }
+    if (p.vip_days) u.vip_until = Math.max(t, u.vip_until || 0) + p.vip_days * 86400;
+    if (p.slots) { u.slots_extra += p.slots; u.slots_bought++; }
+    if (p.once) u.start_pack = true;
+    return { granted: p.title };
+  };
+
+  // ---------- вызов ----------
+  const READ = new Set(["config", "me", "inventory", "item", "market/mine", "fair", "friends", "feed", "history", "shop", "raffle", "upgrade/quote", "sell/quote"]);
+  let ready = null, queue = Promise.resolve();
+  const clone = x => JSON.parse(JSON.stringify(x));
   window.DemoServer = {
-    async call(path, body) {
-      await new Promise(r => setTimeout(r, 60));
-      const fn = H[path];
-      if (!fn) throw { message: "Нет такого метода", code: "error" };
-      try { return JSON.parse(JSON.stringify(fn(body || {}))); }
-      catch (e) { if (e && e.message && e.code) throw e; console.error(e); throw { message: "Ошибка демо", code: "error" }; }
+    call(path, body = {}) {
+      ready = ready || init();
+      // запросы по очереди, как per-user lock на сервере
+      const run = queue.then(() => ready).then(async () => {
+        const h = H[path];
+        if (!h) err("Нет такого метода", "BAD_REQUEST");
+        const snapshot = JSON.stringify(S);
+        try {
+          const res = await h(clone(body || {}));
+          if (!READ.has(path)) save();
+          return clone(res);
+        } catch (e) {
+          S = JSON.parse(snapshot); // транзакция: при ошибке ничего не меняется
+          throw e;
+        }
+      });
+      queue = run.catch(() => {});
+      // небольшая задержка сети
+      return run.then(r => new Promise(res => setTimeout(() => res(r), path === "spin" ? 260 : 90)));
     },
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* */ } location.reload(); },
   };
 })();
