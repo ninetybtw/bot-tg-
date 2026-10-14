@@ -44,6 +44,7 @@ HELP = (
     "/reply ID текст — ответить игроку\n"
     "/refund ID_чека — вернуть звёзды и снять неиспользованное\n"
     "/raffle — провести розыгрыш дня сейчас\n"
+    "/ad — реклама на главном экране: показать, поставить, снять, статистика\n"
     "/config — текущий конфиг экономики файлом\n"
     "/setconfig {json} — новая версия конфига (проверка: шансы 100%, возврат 78–82%)\n"
     "/cancel — отменить действие"
@@ -151,6 +152,49 @@ async def raffle_now(message: Message, game: Game) -> None:
         return
     lines = "\n".join(f"{w['place']}. {html.escape(w['name'])} — {html.escape(w['prize'])}" for w in res["winners"])
     await message.answer(f"🎟 Розыгрыш {res['day']}\n\n{lines or 'Билетов не было'}")
+
+
+AD_HELP = (
+    "📣 <b>Реклама на главном экране</b>\n\n"
+    "Поставить:\n<code>/ad Заголовок | Текст | https://t.me/канал | Кнопка | 📣</code>\n"
+    "Кнопка и значок необязательны. Заголовок до 40 символов, текст до 80.\n"
+    "Снять: <code>/ad off</code>"
+)
+
+
+@router.message(Command("ad"))
+async def ad(message: Message, command: CommandObject, game: Game) -> None:
+    args = (command.args or "").strip()
+    if args.lower() in ("off", "снять", "выкл"):
+        await game.clear_ad()
+        await message.answer("✅ Реклама снята. На главном экране снова заглушка (если задан ADS_CONTACT)")
+        return
+    if args:
+        parts = [p.strip() for p in args.split("|")]
+        if len(parts) < 3:
+            await message.answer(AD_HELP)
+            return
+        try:
+            ad = await game.set_ad(*(parts + ["", ""])[:5])
+        except GameError as e:
+            await message.answer(f"❌ {html.escape(e.message)}")
+            return
+        await message.answer(f"✅ Реклама стоит на главном экране у всех игроков:\n\n{html.escape(ad['icon'])} "
+                             f"<b>{html.escape(ad['title'])}</b>\n{html.escape(ad['text'])}\n"
+                             f"[{html.escape(ad['button'])}] → {html.escape(ad['url'])}")
+        return
+    st = await game.ad_stats()
+    if not st:
+        await message.answer("Сейчас своей рекламы нет.\n\n" + AD_HELP)
+        return
+    a, v, c = st["ad"], st["view"], st["click"]
+    ctr = f"{c['users'] / v['users'] * 100:.1f}%" if v["users"] else "—"
+    await message.answer(
+        f"📣 <b>Сейчас на главном экране</b>\n{html.escape(a['icon'])} <b>{html.escape(a['title'])}</b>\n"
+        f"{html.escape(a['text'])}\n[{html.escape(a['button'])}] → {html.escape(a['url'])}\n\n"
+        f"👀 Увидели: <b>{v['users']}</b> игроков (сегодня {v['users_today']}), показов {v['total']}\n"
+        f"👆 Перешли: <b>{c['users']}</b> игроков (сегодня {c['users_today']}), переходов {c['total']}\n"
+        f"Конверсия в переход: <b>{ctr}</b>\n\n" + AD_HELP)
 
 
 @router.message(Command("config"))

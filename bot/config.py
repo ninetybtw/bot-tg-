@@ -15,6 +15,7 @@ class Config:
     web_port: int
     stars_enabled: bool
     dev_auth: bool           # только для локальной отладки без Telegram
+    ads_contact: str = ""    # @username для заглушки «Здесь может быть ваша реклама», пусто — без заглушки
 
 
 def _bool(name: str, default: str = "0") -> bool:
@@ -36,4 +37,5 @@ def load_config() -> Config:
         web_port=int(os.getenv("WEB_PORT", "8080")),
         stars_enabled=_bool("STARS_ENABLED"),
         dev_auth=_bool("DEV_AUTH"),
+        ads_contact=os.getenv("ADS_CONTACT", "").strip().lstrip("@"),
     )

@@ -22,6 +22,7 @@ class Country:
     operators: tuple[str, ...]
     groups: tuple[int, ...]
     sep: str
+    regroup: tuple[int, ...] = ()  # как принято писать номер в стране: группы по всем цифрам после кода страны
 
 
 COUNTRIES: dict[str, Country] = {
@@ -30,6 +31,17 @@ COUNTRIES: dict[str, Country] = {
                   ("700", "701", "702", "705", "707", "708", "747", "750", "751", "760", "771",
                    "775", "776", "777", "778"), (3, 2, 2), "-"),
     "BY": Country("BY", "Беларусь", "🇧🇾", "+375", ("25", "29", "33", "44"), (3, 2, 2), "-"),
+    "UZ": Country("UZ", "Узбекистан", "🇺🇿", "+998",
+                  ("90", "91", "93", "94", "95", "97", "98", "99", "33", "88", "77", "50"), (3, 2, 2), "-"),
+    "KG": Country("KG", "Кыргызстан", "🇰🇬", "+996", ("70", "50", "55", "77", "22", "99"), (3, 2, 2), " ",
+                  regroup=(3, 3, 3)),
+    "AM": Country("AM", "Армения", "🇦🇲", "+374", ("9", "7", "4", "5", "3"), (3, 2, 2), "-",
+                  regroup=(2, 2, 2, 2)),
+    "AZ": Country("AZ", "Азербайджан", "🇦🇿", "+994", ("10", "50", "51", "55", "60", "70", "77", "99"),
+                  (3, 2, 2), "-"),
+    "TJ": Country("TJ", "Таджикистан", "🇹🇯", "+992", ("90", "91", "92", "93", "98", "88", "55", "50", "77", "70"),
+                  (3, 2, 2), "-"),
+    "GE": Country("GE", "Грузия", "🇬🇪", "+995", ("55", "57", "59", "51"), (3, 2, 2), "-", regroup=(3, 2, 2, 2)),
     "AE": Country("AE", "ОАЭ", "🇦🇪", "+971", ("50", "52", "54", "55", "56", "58"), (3, 4), " "),
 }
 
@@ -48,7 +60,14 @@ TAIL_LADDERS = ("0123456", "1234567", "2345678", "3456789", "9876543", "8765432"
 
 
 def format_number(country: str, op: str, sub: str) -> str:
+    """«+7 999 123-45-67». Первая группа после кода страны всегда отделена пробелом."""
     c = COUNTRIES[country]
+    if c.regroup:
+        digits, parts, i = op + sub, [], 0
+        for g in c.regroup:
+            parts.append(digits[i:i + g])
+            i += g
+        return f"{c.dial} {parts[0]} {c.sep.join(parts[1:])}"
     parts, i = [], 0
     for g in c.groups:
         parts.append(sub[i:i + g])
@@ -220,9 +239,13 @@ def pick_country(rng: random.Random, weights: dict[str, int]) -> str:
 
 def generate(tier: int, rng: random.Random, country: str | None = None, weights: dict[str, int] | None = None,
              divine=(), attempts: int = 3000) -> tuple[str, str, str, str, list[int]]:
-    """(страна, код, хвост, правило, подсветка) ровно указанной ступени."""
-    country = country or pick_country(rng, weights or {"RU": 1})
-    order = [country] + [c for c in COUNTRIES if c != country]
+    """(страна, код, хвост, правило, подсветка) ровно указанной ступени.
+    Если страна задана — номер только этой страны (регион игрока), иначе страна по весам."""
+    if country in COUNTRIES:
+        order = [country]
+    else:
+        first = pick_country(rng, weights or {"RU": 1})
+        order = [first] + [c for c in COUNTRIES if c != first]
     for code in order:
         c = COUNTRIES[code]
         for _ in range(attempts):

@@ -52,12 +52,15 @@ class Game:
         self.stars_enabled = stars_enabled
         self.clock = clock
         self.outbox: list[tuple[int, str]] = []
+        self.ad: dict | None = None
 
     # ---------- конфиг ----------
 
     async def load_config(self) -> None:
         raw = await self.db.get_setting("game_config")
         self.cfg = normalize(merge(DEFAULTS, json.loads(raw) if raw else {}))
+        ad = await self.db.get_setting("ad")
+        self.ad = json.loads(ad) if ad else None
 
     async def save_config(self, override: dict) -> list[str]:
         cfg = normalize(merge(DEFAULTS, override))
@@ -104,6 +107,8 @@ class Game:
             "market": c["market"],
             "inventory": c["inventory"],
             "rules": phones.RULES,
+            "number_masks": {k: phones.format_number(k, "•" * len(c.operators[0]), "•" * phones.TAIL)
+                             for k, c in phones.COUNTRIES.items()},
             "stars_enabled": self.stars_enabled,
         }
 
@@ -233,8 +238,9 @@ class Game:
 
     async def _issue(self, uid: int, tier: int, rng, source: str, place: str = "free",
                      country: str | None = None) -> dict:
-        """Собрать номер ступени tier и выдать экземпляр тиража."""
+        """Собрать номер ступени tier и выдать экземпляр тиража. Номер — из страны игрока."""
         size = int(self.cfg["editions"].get(str(tier), 1))
+        country = country or await self.db.val("SELECT country FROM users WHERE id = ?", uid)
         for _ in range(200):
             code, op, sub, rule, hl = phones.generate(tier, rng, country, self.cfg["number_country_weights"],
                                                       self.divine)
@@ -1309,6 +1315,48 @@ class Game:
                                   u["vip_until"] - p["vip_days"] * 86400, u["id"])
             await self.db.run("UPDATE payments SET refunded = 1 WHERE id = ?", pay["id"])
             return {"user_id": pay["user_id"], "stars": pay["stars"]}
+
+    # ---------- реклама на главном экране ----------
+
+    async def set_ad(self, title: str, text: str, url: str, button: str = "", icon: str = "") -> dict:
+        title, text, url = title.strip(), text.strip(), url.strip()
+        button, icon = (button.strip() or "Открыть"), (icon.strip() or "📣")
+        if not 1 <= len(title) <= 40:
+            raise GameError("Заголовок от 1 до 40 символов")
+        if len(text) > 80:
+            raise GameError("Текст не длиннее 80 символов")
+        if not url.startswith("https://") or " " in url:
+            raise GameError("Ссылка должна начинаться с https://")
+        if len(button) > 16 or len(icon) > 4:
+            raise GameError("Кнопка не длиннее 16 символов, значок — один эмодзи")
+        ad = {"id": int(self.clock()), "title": title, "text": text, "url": url, "button": button, "icon": icon}
+        await self.db.set_setting("ad", json.dumps(ad, ensure_ascii=False))
+        self.ad = ad
+        return ad
+
+    async def clear_ad(self) -> None:
+        await self.db.set_setting("ad", "")
+        self.ad = None
+
+    async def ad_event(self, uid: int, ad_id: int, kind: str) -> None:
+        """Показ или переход по рекламе: счётчик на игрока и день, для статистики рекламодателю."""
+        if kind not in ("view", "click") or not self.ad or self.ad["id"] != int(ad_id):
+            return
+        async with self.db.tx():
+            await self._counter(uid, f"ad_{kind}:{ad_id}", 1)
+
+    async def ad_stats(self) -> dict | None:
+        if not self.ad:
+            return None
+        today = day_key(self.clock())
+        out = {"ad": self.ad}
+        for kind in ("view", "click"):
+            key = f"ad_{kind}:{self.ad['id']}"
+            row = await self.db.one("SELECT SUM(value), COUNT(DISTINCT user_id) FROM counters WHERE key = ?", key)
+            day = await self.db.one("SELECT SUM(value), COUNT(DISTINCT user_id) FROM counters WHERE key = ? "
+                                    "AND day = ?", key, today)
+            out[kind] = {"total": row[0] or 0, "users": row[1], "today": day[0] or 0, "users_today": day[1]}
+        return out
 
     # ---------- фоновые задачи ----------
 

@@ -155,7 +155,16 @@ def create_app(game: Game, bot: Bot, config: Config) -> web.Application:
         await game.ensure_user(u["id"], u["username"], u["first_name"], u["language_code"], parse_ref(u["start_param"]))
         data = await game.me(u["id"])
         data["ref_link"] = await ref_link(bot, config, u["id"])
+        data["ad"] = game.ad or ({"id": 0, "placeholder": True, "icon": "📣", "title": "Ваша реклама здесь",
+                                  "text": "Её увидит каждый игрок", "button": "Связаться",
+                                  "url": f"https://t.me/{config.ads_contact}"} if config.ads_contact else None)
         return data
+
+    @routes.post("/api/ad")
+    async def ad(r):
+        b = body(r)
+        await game.ad_event(uid(r), int(b.get("id", 0)), str(b.get("kind", "")))
+        return {"ok": True}
 
     @routes.post("/api/spin")
     async def spin(r):

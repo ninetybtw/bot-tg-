@@ -8,7 +8,7 @@
   if (!C || !D) return;
   const G = D.game, LAD = C.ladder_cents;
   const EPIC = 3, LEGENDARY = 4, RARE = 2, SECRET = 6;
-  const KEY = "dozvon-demo-v14";
+  const KEY = "dozvon-demo-v15";
   const now = () => Date.now() / 1000;
   const MSK = 3 * 3600;
   const dayKey = ts => new Date((ts + MSK) * 1000).toISOString().slice(0, 10);
@@ -114,7 +114,7 @@
         slots_extra: 0, slots_bought: 0, start_pack: false, starter_used: false, country: "RU", country_confirmed: false,
         country_changed_at: null, settings: {}, showcase: [], badges: [], gift_day: dayKey(t - 86400), gift_streak: 2, ref_count: 2,
       },
-      others: OTHERS.map(([name, friend, spins], i) => ({ id: 100 + i, name, friend, spins: spins || 0, xp: 300 + ((i * 397) % 2400), extra: 1500000 + ((i * 7919) % 9) * 900000 })),
+      others: OTHERS.map(([name, friend, spins], i) => ({ id: 100 + i, name, friend, spins: spins || 0, country: ["RU", "KZ", "BY", "UZ", "RU", "KG", "AM", "RU"][i], xp: 300 + ((i * 397) % 2400), extra: 1500000 + ((i * 7919) % 9) * 900000 })),
       raffle: {},
     };
     ledger("rub", G.start_cents, "start");
@@ -170,11 +170,13 @@
     return Array.from({ length: n }, (_, i) => i < free ? "free" : "overflow");
   }
   function issue(uid, tier, u1, source, state = "free") {
-    const pool = D.pool[tier] || D.pool[Math.min(tier, 6)];
+    // номер — из страны владельца, как на сервере
+    const country = uid === 1 ? S.user.country : (S.others.find(o => o.id === uid) || {}).country || "RU";
+    const pool = (D.pool[country] || D.pool.RU)[tier];
     const size = +(C.editions[String(tier)] || 1);
     const start = Math.floor(u1 * pool.length);
     for (let k = 0; k < pool.length; k++) {
-      const [country, op, sub, rule, hl] = pool[(start + k) % pool.length];
+      const [op, sub, rule, hl] = pool[(start + k) % pool.length];
       const key = `${country}:${op}${sub}`;
       const ed = S.editions[key] || (S.editions[key] = { size, issued: size > 1 ? Math.floor(u1 * 7) % size : 0 });
       if (ed.issued >= ed.size) continue;
@@ -188,6 +190,12 @@
   }
   function formatNumber(country, op, sub) {
     const c = D.countries[country];
+    if (c.regroup && c.regroup.length) {
+      const digits = op + sub;
+      let k = 0;
+      const g = c.regroup.map(n => { const x = digits.slice(k, k + n); k += n; return x; });
+      return `${c.dial} ${g[0]} ${g.slice(1).join(c.sep)}`;
+    }
     let i = 0;
     const parts = c.groups.map(g => { const s = sub.slice(i, i + g); i += g; return s; });
     return `${c.dial} ${op} ${parts.join(c.sep)}`;
@@ -248,6 +256,7 @@
   // ---------- эндпоинты ----------
   const H = {};
   H.config = () => C;
+  H.ad = () => ({ ok: true });
   H.me = () => {
     dailyVip(); promoteOverflow();
     const u = S.user, t = now(), [e, ets] = energy(), [lvl, xpIn, need] = levelFromXp(u.xp);
@@ -285,6 +294,7 @@
       last_drop: lastDrop ? view(S.items.find(i => i.id === lastDrop.item_id)) : null,
       last_sale: sale ? { id: sale.id, amount_cents: sale.amount_cents, undo_until: sale.undo_until, count: sale.item_ids.length } : null,
       stars_enabled: true, ref_link: "https://t.me/твой_бот?start=r1",
+      ad: { id: 0, placeholder: true, icon: "📣", title: "Ваша реклама здесь", text: "Её увидит каждый игрок", button: "Связаться", url: "https://t.me/" },
     };
   };
   H.country = b => {

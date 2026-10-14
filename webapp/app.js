@@ -31,7 +31,7 @@
 
   // ---------- API ----------
   const READ = new Set(["config", "me", "inventory", "item", "market", "market/mine", "fair", "friends", "rating", "feed",
-    "history", "shop", "raffle", "upgrade/quote", "sell/quote", "seen"]);
+    "history", "shop", "raffle", "upgrade/quote", "sell/quote", "seen", "ad"]);
   async function api(path, body = {}) {
     if (!LIVE) return window.DemoServer.call(path, body);
     const headers = { "Content-Type": "application/json", Authorization: "tma " + tg.initData };
@@ -97,7 +97,7 @@
     const lv = CFG.levels.find(l => l.key === ui.level);
     if (!it) {
       return `${skyline()}<div class="meta"><span>Табло</span><span class="tag" style="--tcol:var(--neon)">${esc(lv.name)}</span></div>
-        ${flapsHTML("+7 ••• •••-••-••", { plain: true })}<div class="foot">Жми «Крутить» — номер появится здесь</div>`;
+        ${flapsHTML((CFG.number_masks || {})[ME.country] || "+7 ••• •••-••-••", { plain: true })}<div class="foot">Жми «Крутить» — номер появится здесь</div>`;
     }
     return `${skyline()}<div class="meta"><span>${it.flag} ${esc(it.country_name)}</span><span class="tag" style="--tcol:var(--t${it.tier.idx})">${it.tier.icon} ${esc(it.tier.name)}</span></div>
       ${flapsHTML(it)}<div class="foot">${esc(it.rule_name)} · игровой номер${it.copy ? ` · ${it.copy.no} из ${it.copy.of}` : ""}</div>`;
@@ -260,7 +260,7 @@
       ${ME.luck ? `<span class="badge-luck">✨ ×${String(ME.luck.mult).replace(".", ",")} · ${ME.luck.spins_left}</span>` : `<span>гарантия ≤${p.epic_in}</span>`}</div>`;
   }
   function renderPlay() {
-    const t = ME.today, it = ui.boardItem || ME.last_drop;
+    const t = ME.today, last = ME.last_drop && ME.last_drop.country === ME.country ? ME.last_drop : null, it = ui.boardItem || last;
     const claimable = t.tasks.filter(x => x.progress >= x.target && !x.claimed).length;
     const done = t.tasks.filter(x => x.claimed).length;
     $main.className = "main noscroll";
@@ -271,6 +271,7 @@
         <button data-act="tasks" class="${claimable ? "ready" : ""}"><b>✅</b>${done}/${t.tasks.length}</button>
         <button data-act="raffle"><b>🎟</b>${t.tickets} бил.</button>
       </div>
+      ${adHTML()}
       <div class="ticker" id="ticker"><div class="track"><span class="muted">Эпик+ у друзей и в игре появится здесь</span></div></div>
       <div class="board-slot"><div class="board" id="board">${boardHTML(it)}</div></div>
       ${pityLine()}
@@ -288,6 +289,26 @@
     tick();
     loadFeed();
   }
+  // ---------- реклама ----------
+  function adHTML() {
+    const a = ME.ad;
+    if (!a) return "";
+    const fresh = ui.adSeen !== a.id; // показ считаем один раз за запуск игры
+    if (fresh) { ui.adSeen = a.id; if (!a.placeholder) api("ad", { id: a.id, kind: "view" }).catch(() => {}); }
+    return `<button class="ad ${fresh ? "in" : ""}" data-act="ad" aria-label="Реклама: ${esc(a.title)}"><span class="ad-ic">${esc(a.icon)}</span>
+      <span class="ad-body"><b>${esc(a.title)}</b>${a.text ? `<span>${esc(a.text)}</span>` : ""}</span><span class="ad-btn">${esc(a.button)}</span><i class="ad-mark">реклама</i></button>`;
+  }
+  function openAd() {
+    const a = ME.ad;
+    if (!a) return;
+    hap("i", "light");
+    if (!a.placeholder) api("ad", { id: a.id, kind: "click" }).catch(() => {});
+    if (!LIVE) return toast(a.placeholder ? "Здесь будет реклама, которую ты поставишь командой /ad в боте" : `Откроется ${esc(a.url)}`);
+    try {
+      if (/^https:\/\/t\.me\//.test(a.url) && tg.openTelegramLink) tg.openTelegramLink(a.url); else tg.openLink(a.url);
+    } catch (e) { location.href = a.url; }
+  }
+
   function paintBoard(it, flash) {
     const board = document.getElementById("board");
     if (!board) return;
@@ -392,18 +413,8 @@
         <div class="kv"><span>Останется</span><b class="mono">${money(ME.balance_cents - plan.cost)}</b></div>
         <div class="kv"><span>${esc(lv.goal.label)}</span><b class="mono">${pct(lv.goal.p, 2)} за крутку</b></div></div>
       <p class="small muted">Шансы одинаковы для всех и видны на экране «Шансы». Отменить крутку после результата нельзя.</p>
-      <div class="actions"><button class="btn" data-act="close">Отмена</button><button class="btn primary ring-btn" id="cgo" disabled>Подожди 3</button></div>`);
-    countdown(sh.querySelector("#cgo"), "Подтвердить", () => { closeSheet(true); doSpin(true); });
-  }
-  function countdown(btn, label, onGo, sec = 3) {
-    let n = sec;
-    btn.onclick = onGo;
-    const iv = setInterval(() => {
-      n--;
-      if (!document.body.contains(btn)) return clearInterval(iv);
-      if (n <= 0) { clearInterval(iv); btn.disabled = false; btn.textContent = label; hap("s"); }
-      else btn.textContent = `Подожди ${n}`;
-    }, 1000);
+      <div class="actions"><button class="btn" data-act="close">Отмена</button><button class="btn primary" id="cgo">Подтвердить</button></div>`);
+    sh.querySelector("#cgo").onclick = () => { closeSheet(true); doSpin(true); };
   }
 
   function callCard(it, opts = {}) {
@@ -463,10 +474,8 @@
     const it = items.find(i => i.tier.idx === top);
     const sh = openSheet(`${tierHead(it.tier)}<h2 style="text-align:center">Продать системе?</h2>
       <p class="muted" style="text-align:center">${items.length > 1 ? `${items.length} номеров` : esc(it.number)} за <b class="price">${money(total)}</b> (60% цены). Отменить можно в течение 10 минут.</p>
-      <div class="actions"><button class="btn" data-act="close">Отмена</button><button class="btn danger" id="sgo" ${top >= 5 ? "disabled" : ""}>${top >= 5 ? "Подожди 3" : "Продать"}</button></div>`);
-    const b = sh.querySelector("#sgo");
-    if (top >= 5) countdown(b, "Продать", () => { closeSheet(true); go(true); });
-    else b.onclick = () => { closeSheet(true); go(true); };
+      <div class="actions"><button class="btn" data-act="close">Отмена</button><button class="btn danger" id="sgo">Продать</button></div>`);
+    sh.querySelector("#sgo").onclick = () => { closeSheet(true); go(true); };
   }
   async function undoSale(id) {
     try { const r = await api("sales/undo", { sale_id: id }); hap("n", "success"); toast(`↩️ Вернули ${r.restored} ${r.restored === 1 ? "номер" : "номера"} в коллекцию`); await refresh(); rerender(); }
@@ -493,8 +502,8 @@
   // ---------- плитка и коллекция ----------
   function tailHTML(it) {
     const hl = new Set(it.highlight || []);
-    const rest = it.number.split(" ").slice(2).join(" ");
-    let j = it.op.length, out = "";
+    const parts = it.number.split(" "), rest = parts.slice(2).join(" ");
+    let j = parts[1].length, out = ""; // первая группа после кода страны (у части стран — не код оператора)
     for (const ch of rest) {
       if (/\d/.test(ch)) { out += hl.has(j) ? `<em>${ch}</em>` : ch; j++; } else out += ch === " " ? NB : ch;
     }
@@ -505,7 +514,7 @@
     return `<button class="tile ${tcls(it.tier)} ${opts.sel ? "sel" : ""}" data-act="${opts.act || "item"}" data-id="${it.id}" style="--i:${opts.i || 0}">
       ${it.is_new && !opts.noNew ? '<span class="new" aria-label="новый"></span>' : ""}
       <span class="ti"><b class="${it.tier.idx === 7 ? "rainbow" : ""}">${it.tier.icon}</b><span>${it.flag}</span></span>
-      <span class="tn"><span class="tdial">${esc(it.dial)} ${esc(it.op)}</span>${tailHTML(it)}</span>
+      <span class="tn"><span class="tdial">${esc(it.number.split(" ").slice(0, 2).join(" "))}</span>${tailHTML(it)}</span>
       <span class="tp"><span>${it.copy ? `№${it.copy.no}/${it.copy.of}` : money(it.price_cents)}</span><span class="flags">${flags}</span></span>
     </button>`;
   }
@@ -749,8 +758,8 @@
     };
     if (!q.confirm) return run();
     const sh = openSheet(`<h2>Точно улучшить?</h2><p class="muted">В ставке номер ступени Эпик или выше. Если не выйдет, он сгорит. Шанс ${pct(q.chance, 2)}.</p>
-      <div class="actions"><button class="btn" data-act="close">Отмена</button><button class="btn danger" id="ugo" disabled>Подожди 3</button></div>`);
-    countdown(sh.querySelector("#ugo"), "Улучшить", () => { closeSheet(true); run(); });
+      <div class="actions"><button class="btn" data-act="close">Отмена</button><button class="btn danger" id="ugo">Улучшить</button></div>`);
+    sh.querySelector("#ugo").onclick = () => { closeSheet(true); run(); };
   }
   async function contractGo() {
     const chosen = (ui.items || []).filter(i => ui.contract.sel.has(i.id));
@@ -1017,7 +1026,7 @@
   function countrySheet(first) {
     const all = CFG.currency.countries;
     const sug = ME.country;
-    openSheet(`<h2>${first ? "Где ты играешь?" : "Страна и валюта"}</h2><p class="small muted">Цены покажем в твоей валюте по игровому курсу. Это меняет только отображение — не цены, шансы и баланс. ${first ? "" : "Сменить можно раз в 30 дней."}</p>
+    openSheet(`<h2>${first ? "Где ты играешь?" : "Страна и валюта"}</h2><p class="small muted">Номера будут выпадать твоей страны, а цены покажем в твоей валюте по игровому курсу. Шансы и баланс от страны не зависят. Сменить страну можно раз в 30 дней.</p>
       ${first ? `<button class="btn primary block" data-act="setcountry" data-v="${sug}" style="margin:6px 0 14px">Да, ${all[sug].flag} ${esc(all[sug].name)} · ${esc(all[sug].symbol)}</button><h3>Другая страна</h3>` : ""}
       ${!first && ME.country_change_after ? `<div class="banner">Следующая смена с ${new Date(ME.country_change_after * 1000).toLocaleDateString("ru-RU")}</div>` : ""}
       <div class="list">${Object.entries(all).map(([code, c], i) => `<button class="li" data-act="setcountry" data-v="${code}" style="--i:${i}"><span class="ic">${c.flag}</span><span class="grow"><b>${esc(c.name)}</b><span class="small muted">1 000 ₽ = ${group(String((1000 * c.rate).toFixed(c.decimals))).replace(".", ",")} ${esc(c.symbol)}</span></span>${code === ME.country ? '<span class="ok">✓</span>' : ""}</button>`).join("")}</div>`);
@@ -1089,7 +1098,7 @@
     terms: () => termsSheet(),
     country: () => countrySheet(false),
     setcountry: async el => {
-      try { await api("country", { country: el.dataset.v }); closeSheet(); await refresh(); ui.shownBalance = ME.balance_cents; renderTop(); rerender(); toast(`${CFG.currency.countries[el.dataset.v].flag} Цены в ${esc(CFG.currency.countries[el.dataset.v].symbol)}`); }
+      try { await api("country", { country: el.dataset.v }); closeSheet(); await refresh(); ui.shownBalance = ME.balance_cents; renderTop(); rerender(); const c = CFG.currency.countries[el.dataset.v]; ui.boardItem = null; if (ui.tab === "play") renderPlay(); toast(`${c.flag} Номера: ${esc(c.name)} · цены в ${esc(c.symbol)}`); }
       catch (e) { fail(e); }
     },
     task: async el => {
@@ -1140,6 +1149,7 @@
     rboard: el => { ui.rating.board = el.dataset.v; renderRating(); },
     copy: async el => { try { await navigator.clipboard.writeText(el.dataset.v); toast("Ссылка скопирована"); } catch (e) { toast("Не получилось скопировать — зажми ссылку"); } },
     setting: async el => { const k = el.dataset.k; try { ME.settings = await api("settings", { [k]: !ME.settings[k] }); document.body.classList.toggle("noeffects", !!ME.settings.no_effects); hap("s"); renderMore(); } catch (e) { fail(e); } },
+    ad: () => openAd(),
     support: () => { const bot = (ME.ref_link.match(/t\.me\/([^/?]+)/) || [])[1]; if (LIVE && bot) tg.openTelegramLink(`https://t.me/${bot}`); else toast("Напиши /paysupport в чате с ботом"); },
     "buy-star": el => buyStar(el.dataset.k),
   };

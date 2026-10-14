@@ -12,30 +12,32 @@ from bot.db import Database  # noqa: E402
 from bot.game import phones  # noqa: E402
 from bot.game.service import Game  # noqa: E402
 
-PER_TIER = 60
+PER_TIER = 24
 
 game = Game(Database(":memory:"), stars_enabled=True)
 cfg = game.cfg
-rng = random.Random(20261012)
+rng = random.Random(20261014)
 pool = {}
-for tier in range(7):
-    seen, out = set(), []
-    while len(out) < PER_TIER:
-        code, op, sub, rule, hl = phones.generate(tier, rng, None, cfg["number_country_weights"], game.divine)
-        key = phones.number_key(code, op, sub)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append([code, op, sub, rule, hl])
-    pool[tier] = out
-pool[7] = []
-for code, op, sub in game.divine:
-    tier, rule, hl = phones.classify(code, op, sub, game.divine)
-    pool[7].append([code, op, sub, rule, hl])
+for code in cfg["currency"]["countries"]:  # номера только страны игрока, как на сервере
+    pool[code] = {}
+    for tier in range(7):
+        seen, out = set(), []
+        while len(out) < PER_TIER:
+            _, op, sub, rule, hl = phones.generate(tier, rng, code, None, game.divine)
+            if (op, sub) in seen:
+                continue
+            seen.add((op, sub))
+            out.append([op, sub, rule, hl])
+        pool[code][tier] = out
+    pool[code][7] = []
+    for c, op, sub in game.divine:
+        if c == code:
+            pool[code][7].append([op, sub, *phones.classify(c, op, sub, game.divine)[1:]])
 
 data = {
     "pool": pool,
-    "countries": {k: {"name": c.name, "flag": c.flag, "dial": c.dial, "groups": c.groups, "sep": c.sep}
+    "countries": {k: {"name": c.name, "flag": c.flag, "dial": c.dial, "groups": c.groups, "sep": c.sep,
+                      "regroup": c.regroup}
                   for k, c in phones.COUNTRIES.items()},
     "game": {k: cfg[k] for k in ("start_cents", "energy", "coin_spins", "upper_levels_per_day", "starter",
                                  "break_hint_spins", "undo_sell", "tasks", "tasks_per_day", "tickets_per_task",

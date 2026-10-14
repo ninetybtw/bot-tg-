@@ -169,6 +169,58 @@ def test_mythic_edition_of_five_under_concurrency():
     run(scenario())
 
 
+def test_numbers_come_from_player_country():
+    """Регион игрока: номера выпадают только его страны, при смене страны — новой."""
+    async def scenario():
+        g, db, clock = await make_game()
+        try:
+            div = g.divine
+            for code in ("RU", "KZ", "BY", "UZ", "KG", "AM", "AZ", "TJ", "GE"):
+                for t in range(8):  # каждая ступень, включая Божественный, есть в каждой стране
+                    assert phones.generate(t, random.Random(t), code, None, div)[0] == code
+            await g.ensure_user(1, None, "Ru", "ru")
+            await g.set_country(1, "RU")
+            async with db.tx():
+                await db.run("UPDATE users SET balance_cents = 10000000 WHERE id = 1")
+            r = await g.spin(1, "common", 10, True)
+            assert {d["country"] for d in r["drops"]} == {"RU"}
+            assert all(d["number"].startswith("+7 9") for d in r["drops"])
+            await g.ensure_user(2, None, "Uz", "uz")
+            r = await g.spin(2, "common", 3)
+            assert {d["country"] for d in r["drops"]} == {"UZ"}
+            assert all(d["number"].startswith("+998 ") for d in r["drops"])
+        finally:
+            await db.close()
+    run(scenario())
+
+
+def test_main_screen_ad_and_stats():
+    async def scenario():
+        g, db, clock = await make_game()
+        try:
+            await g.ensure_user(1, None, "A", "ru")
+            await g.ensure_user(2, None, "B", "ru")
+            with pytest.raises(GameError):
+                await g.set_ad("Канал", "текст", "http://insecure")
+            ad = await g.set_ad("Канал про номера", "Лучшие номера дня", "https://t.me/example", "", "")
+            assert ad["button"] == "Открыть" and ad["icon"] == "📣"
+            for uid in (1, 1, 2):
+                await g.ad_event(uid, ad["id"], "view")
+            await g.ad_event(2, ad["id"], "click")
+            await g.ad_event(2, ad["id"] + 1, "click")  # старая реклама не считается
+            st = await g.ad_stats()
+            assert st["view"] == {"total": 3, "users": 2, "today": 3, "users_today": 2}
+            assert st["click"]["total"] == 1 and st["click"]["users"] == 1
+            g2 = Game(db)
+            await g2.load_config()  # реклама переживает перезапуск
+            assert g2.ad == ad
+            await g.clear_ad()
+            assert g.ad is None and await g.ad_stats() is None
+        finally:
+            await db.close()
+    run(scenario())
+
+
 def test_spin_levels_energy_confirm_and_currency():
     async def scenario():
         g, db, clock = await make_game()

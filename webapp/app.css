@@ -74,7 +74,8 @@ input { font: inherit; color: var(--fg); }
 .main { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 2px 14px calc(var(--nav-h) + 16px + env(safe-area-inset-bottom, 0px));
   scrollbar-width: none; }
 .main::-webkit-scrollbar { display: none; }
-.main.noscroll { overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+.main.noscroll { overflow-y: auto; display: flex; flex-direction: column; gap: 8px; scrollbar-width: none; }
+.main.noscroll::-webkit-scrollbar { display: none; }
 .main.enter > * { animation: enter .32s var(--ease) both; }
 .main.enter > *:nth-child(2) { animation-delay: .03s; } .main.enter > *:nth-child(3) { animation-delay: .06s; }
 .main.enter > *:nth-child(4) { animation-delay: .09s; } .main.enter > *:nth-child(5) { animation-delay: .12s; }
@@ -285,8 +286,8 @@ h3 { font: 800 12px var(--body); letter-spacing: .1em; text-transform: uppercase
 .search { width: 100%; min-height: 42px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); padding: 0 12px; font: 700 14px var(--mono); }
 .search::placeholder { color: var(--muted); font-family: var(--body); }
 .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.stats div { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 8px 10px; }
-.stats b { display: block; font: 800 15px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stats div { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 8px 10px; container-type: inline-size; min-width: 0; }
+.stats b { display: block; font: 800 min(15px, 13.5cqi) var(--mono); letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stats span { font: 700 10px var(--body); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .banner { display: flex; align-items: center; gap: 10px; border-radius: 13px; padding: 9px 12px; font: 700 13px var(--body); margin-bottom: 10px;
   background: rgba(255, 201, 74, .1); border: 1px solid rgba(255, 201, 74, .35); color: var(--gold); animation: enter .3s var(--ease); }
@@ -373,6 +374,37 @@ input[type=range] { width: 100%; accent-color: var(--neon); height: 28px; }
 @keyframes tbar { from { width: 100%; } to { width: 0; } }
 .fly { position: absolute; z-index: 45; font: 800 16px var(--mono); color: var(--rub); pointer-events: none; text-shadow: 0 0 10px rgba(255, 214, 107, .6);
   transition: transform .8s var(--ease), opacity .8s ease-in; }
+
+/* ---------- реклама на главном экране ---------- */
+.ad { position: relative; flex: none; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 50px; padding: 7px 8px 7px 10px;
+  border-radius: 14px; text-align: left; overflow: hidden; color: var(--fg);
+  background: linear-gradient(100deg, rgba(255, 201, 74, .13), rgba(17, 26, 48, .9) 55%); border: 1px solid rgba(255, 201, 74, .32); }
+.ad::before { content: ""; position: absolute; top: 0; bottom: 0; left: -45%; width: 35%; transform: skewX(-20deg); pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 230, 160, .16), transparent); animation: adshine 5.5s ease-in-out 1.2s infinite; }
+@keyframes adshine { 0%, 70% { left: -45%; } 100% { left: 125%; } }
+.ad .ad-ic { flex: none; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-size: 19px; background: rgba(255, 201, 74, .14); }
+.ad .ad-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ad .ad-body b { font: 800 13px var(--body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad .ad-body span { font: 600 11.5px var(--body); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad .ad-btn { flex: none; padding: 7px 11px; border-radius: 10px; background: var(--gold); color: #1d1400; font: 800 12px var(--body); }
+.ad .ad-mark { position: absolute; top: 2px; right: 10px; font: 700 8.5px var(--body); letter-spacing: .08em; text-transform: uppercase; color: rgba(255, 201, 74, .7); }
+.ad:active { transform: scale(.985); }
+.ad.in { animation: adin .5s var(--ease) both; }
+@keyframes adin { from { opacity: 0; transform: translateY(-6px); } }
+
+/* невысокие экраны: всё на главном помещается без прокрутки */
+@media (max-height: 700px) {
+  .today button { min-height: 42px; padding: 3px 2px; }
+  .today button b { font-size: 15px; }
+  .lv { min-height: 62px; padding: 6px 9px; }
+  .lv .g { font-size: 0; }
+  .lv .g b { font-size: 14px; }
+  .spin-btn { min-height: 56px; }
+  .board-slot { min-height: 112px; }
+  .ad { min-height: 44px; padding-block: 5px; }
+  .main.noscroll { gap: 6px; }
+  .ad .ad-ic { width: 30px; height: 30px; font-size: 17px; }
+}
 
 /* ---------- эффекты редкости ---------- */
 .fx { position: absolute; inset: 0; pointer-events: none; z-index: 30; overflow: hidden; }
