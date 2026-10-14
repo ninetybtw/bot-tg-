@@ -38,13 +38,14 @@ class Mailing(StatesGroup):
 
 HELP = (
     "🛠 <b>Админка</b>\n\n"
+    "/panel — админка страницей: статистика, игроки, подкрутка, реклама, удача для всех\n"
     "/stats — игроки, спины, приток и слив по причинам, Stars\n"
     "/broadcast — рассылка всем игрокам\n"
     "/give ID рубли [попытки] — начислить\n"
     "/reply ID текст — ответить игроку\n"
     "/refund ID_чека — вернуть звёзды и снять неиспользованное\n"
     "/raffle — провести розыгрыш дня сейчас\n"
-    "/ad — реклама на главном экране: показать, поставить, снять, статистика\n"
+    "/ad — реклама на главном экране (до 3): показать, поставить, снять, статистика\n"
     "/config — текущий конфиг экономики файлом\n"
     "/setconfig {json} — новая версия конфига (проверка: шансы 100%, возврат 78–82%)\n"
     "/cancel — отменить действие"
@@ -155,19 +156,25 @@ async def raffle_now(message: Message, game: Game) -> None:
 
 
 AD_HELP = (
-    "📣 <b>Реклама на главном экране</b>\n\n"
-    "Поставить:\n<code>/ad Заголовок | Текст | https://t.me/канал | Кнопка | 📣</code>\n"
+    "📣 <b>Реклама на главном экране</b> — до 3 баннеров, листаются по очереди\n\n"
+    "Добавить:\n<code>/ad Заголовок | Текст | https://t.me/канал | Кнопка | 📣</code>\n"
     "Кнопка и значок необязательны. Заголовок до 40 символов, текст до 80.\n"
-    "Снять: <code>/ad off</code>"
+    "Снять одну: <code>/ad off 2</code> (номер из списка), снять все: <code>/ad off</code>\n"
+    "Удобнее — в /panel"
 )
 
 
 @router.message(Command("ad"))
 async def ad(message: Message, command: CommandObject, game: Game) -> None:
     args = (command.args or "").strip()
-    if args.lower() in ("off", "снять", "выкл"):
-        await game.clear_ad()
-        await message.answer("✅ Реклама снята. На главном экране снова заглушка (если задан ADS_CONTACT)")
+    words = args.split()
+    if words and words[0].lower() in ("off", "снять", "выкл"):
+        if len(words) > 1 and words[1].isdigit() and 1 <= int(words[1]) <= len(game.ads):
+            await game.remove_ad(game.ads[int(words[1]) - 1]["id"])
+            await message.answer(f"✅ Реклама №{words[1]} снята")
+        else:
+            await game.remove_ad()
+            await message.answer("✅ Вся реклама снята. На главном экране заглушка (если задан ADS_CONTACT)")
         return
     if args:
         parts = [p.strip() for p in args.split("|")]
@@ -175,26 +182,41 @@ async def ad(message: Message, command: CommandObject, game: Game) -> None:
             await message.answer(AD_HELP)
             return
         try:
-            ad = await game.set_ad(*(parts + ["", ""])[:5])
+            a = await game.set_ad(*(parts + ["", ""])[:5])
         except GameError as e:
             await message.answer(f"❌ {html.escape(e.message)}")
             return
-        await message.answer(f"✅ Реклама стоит на главном экране у всех игроков:\n\n{html.escape(ad['icon'])} "
-                             f"<b>{html.escape(ad['title'])}</b>\n{html.escape(ad['text'])}\n"
-                             f"[{html.escape(ad['button'])}] → {html.escape(ad['url'])}")
+        await message.answer(f"✅ Реклама №{len(game.ads)} стоит на главном экране у всех игроков:\n\n"
+                             f"{html.escape(a['icon'])} <b>{html.escape(a['title'])}</b>\n{html.escape(a['text'])}\n"
+                             f"[{html.escape(a['button'])}] → {html.escape(a['url'])}")
         return
-    st = await game.ad_stats()
-    if not st:
+    stats = await game.ads_stats()
+    if not stats:
         await message.answer("Сейчас своей рекламы нет.\n\n" + AD_HELP)
         return
-    a, v, c = st["ad"], st["view"], st["click"]
-    ctr = f"{c['users'] / v['users'] * 100:.1f}%" if v["users"] else "—"
+    lines = []
+    for i, st in enumerate(stats, 1):
+        a, v, c = st["ad"], st["view"], st["click"]
+        ctr = f"{c['users'] / v['users'] * 100:.1f}%" if v["users"] else "—"
+        lines.append(f"<b>{i}.</b> {html.escape(a['icon'])} <b>{html.escape(a['title'])}</b> → {html.escape(a['url'])}\n"
+                     f"👀 увидели {v['users']} (сегодня {v['users_today']}) · 👆 перешли {c['users']} "
+                     f"(сегодня {c['users_today']}) · конверсия {ctr}")
+    await message.answer("📣 <b>Реклама на главном экране</b>\n\n" + "\n\n".join(lines) + "\n\n" + AD_HELP)
+
+
+@router.message(Command("panel"))
+async def panel(message: Message, config: Config) -> None:
+    from bot.web import admin_token
+    if not config.webapp_url.startswith("https://"):
+        await message.answer("Нужен WEBAPP_URL с https — админка открывается по тому же адресу, что и игра")
+        return
+    url = f"{config.webapp_url}/admin#key={admin_token(config, message.from_user.id)}"
     await message.answer(
-        f"📣 <b>Сейчас на главном экране</b>\n{html.escape(a['icon'])} <b>{html.escape(a['title'])}</b>\n"
-        f"{html.escape(a['text'])}\n[{html.escape(a['button'])}] → {html.escape(a['url'])}\n\n"
-        f"👀 Увидели: <b>{v['users']}</b> игроков (сегодня {v['users_today']}), показов {v['total']}\n"
-        f"👆 Перешли: <b>{c['users']}</b> игроков (сегодня {c['users_today']}), переходов {c['total']}\n"
-        f"Конверсия в переход: <b>{ctr}</b>\n\n" + AD_HELP)
+        "🛠 Админка: статистика, игроки и подкрутка, реклама, удача для всех, рассылка.\n\n"
+        "Кнопка ниже открывает её внутри Telegram. Ссылка для браузера на компьютере действует 24 часа, "
+        f"никому её не пересылай:\n<code>{html.escape(url)}</code>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🛠 Открыть админку", web_app=WebAppInfo(url=f"{config.webapp_url}/admin"))]]))
 
 
 @router.message(Command("config"))
@@ -267,6 +289,34 @@ async def mail_go(message: Message, state: FSMContext, bot: Bot, game: Game, con
 def _play_markup(config: Config) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="📱 Играть", web_app=WebAppInfo(url=config.webapp_url))]])
+
+
+async def broadcast_text(bot: Bot, game: Game, config: Config, text: str, with_button: bool, admin_id: int) -> None:
+    """Рассылка из админки-страницы: обычный текст, по желанию с кнопкой «Играть»."""
+    markup = _play_markup(config) if with_button and config.webapp_url.startswith("https://") else None
+    rows = await game.db.all("SELECT id FROM users WHERE is_blocked = 0")
+    sent = blocked = failed = 0
+    for (uid,) in rows:
+        for _ in range(2):
+            try:
+                await bot.send_message(uid, html.escape(text), reply_markup=markup)
+                sent += 1
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+                continue
+            except TelegramForbiddenError:
+                async with game.db.tx():
+                    await game.db.run("UPDATE users SET is_blocked = 1 WHERE id = ?", uid)
+                blocked += 1
+            except TelegramAPIError:
+                failed += 1
+            break
+        await asyncio.sleep(0.04)
+    try:
+        await bot.send_message(admin_id, f"✅ Рассылка из админки завершена\nДоставлено: <b>{sent}</b>\n"
+                                         f"Заблокировали бота: <b>{blocked}</b>\nОшибки: <b>{failed}</b>")
+    except TelegramAPIError:
+        pass
 
 
 async def _broadcast(bot: Bot, game: Game, from_chat: int, message_id: int,

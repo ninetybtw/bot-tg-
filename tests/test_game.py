@@ -221,6 +221,92 @@ def test_main_screen_ad_and_stats():
     run(scenario())
 
 
+def test_phone_case_catalog_and_economy():
+    from bot.game import devices
+    assert len(devices.MODELS) == 50
+    assert devices.BY_KEY["nokia3310"].tier == MYTHIC
+    assert devices.BY_KEY["nokia3310"].price_rub == max(m.price_rub for m in devices.MODELS if m.tier == MYTHIC)
+    for m in devices.MODELS:  # ступень по цене: дороже — не ниже
+        assert all(m.price_rub >= x.price_rub for x in devices.MODELS if x.tier < m.tier and x.tier < MYTHIC)
+    case = CFG["device_cases"][0]
+    assert sum(case["odds"].values()) == pytest.approx(1)
+    assert devices.case_return(case["odds"], case["price_cents"]) == pytest.approx(0.8, abs=0.005)
+    assert [lv["name"] for lv in CFG["levels"]][-2:] == ["Мифическая", "Секретная"]
+    assert apply_luck(level(CFG, "common")["odds"], 10)[COMMON] > 0  # ×10 не ломает шансы
+
+
+def test_phone_case_spin_sell_undo_and_boost():
+    async def scenario():
+        g, db, clock = await make_game()
+        try:
+            await g.ensure_user(1, None, "A", "ru")
+            assert (await g.me(1))["device_free"] == 1
+            r = await g.device_spin(1, "phones", 1)
+            assert r["paid"] == {"cents": 0, "free": True} and r["drops"][0]["kind"] == "device"
+            assert (await g.me(1))["device_free"] == 0
+            await g.admin_give(1, 100_000_000)
+            with pytest.raises(GameError) as e:
+                await g.device_spin(1, "phones", 10)
+            assert e.value.code == "CONFIRM_REQUIRED"
+            await g.admin_set_boost(1, MYTHIC)  # подкрутка: первый дроп не ниже Мифического
+            r = await g.device_spin(1, "phones", 3, True)
+            assert r["drops"][0]["tier"]["idx"] >= MYTHIC
+            assert (await g.admin_user(1))["boost_min_tier"] is None  # одноразовая
+            col = await g.device_collection(1)
+            assert col["total"] == 4
+            q = await g.sell_quote(1, "all", kind="device")
+            sale = await g.sell(1, q["ids"], True, kind="device")
+            assert sale["cents"] == q["cents"] and (await g.device_collection(1))["total"] == 0
+            await g.undo_sale(1, sale["sale_id"])
+            assert (await g.device_collection(1))["total"] == 4
+            fi = await g.fair_info(1)
+            assert any(x["action"] == "case" and x["number"] for x in fi["rolls"])
+            assert await ledger_ok(db, 1)
+        finally:
+            await db.close()
+    run(scenario())
+
+
+def test_region_luck_event_and_ads_list():
+    async def scenario():
+        g, db, clock = await make_game()
+        try:
+            await g.ensure_user(1, None, "A", "ru")
+            await g.set_region(1, "GE")
+            me = await g.me(1)
+            assert me["region"] == "GE" and me["currency"]["symbol"] == "₽"  # регион не меняет валюту
+            r = await g.spin(1, "common", 3)
+            assert {d["country"] for d in r["drops"]} == {"GE"}
+            with pytest.raises(GameError):
+                await g.start_luck_event(7, 10, 24, "@chan_name")
+            ev = await g.start_luck_event(5, 20, 24, "https://t.me/chan_name")
+            assert ev["chat_id"] == "@chan_name"
+            assert (await g.me(1))["luck_event"]["claimed"] is False
+            await g.claim_luck(1)
+            me = await g.me(1)
+            assert me["luck"] == {"mult": 5.0, "spins_left": 20} and me["luck_event"]["claimed"]
+            with pytest.raises(GameError):
+                await g.claim_luck(1)
+            assert (await g.luck_event_stats())["claims"] == 1
+            clock.t += 25 * 3600
+            assert (await g.me(1))["luck_event"] is None
+            ids = [(await g.set_ad(f"Реклама {i}", "", "https://t.me/x"))["id"] for i in range(3)]
+            with pytest.raises(GameError):
+                await g.set_ad("Четвёртая", "", "https://t.me/x")
+            await g.ad_event(1, ids[1], "click")
+            st = await g.ads_stats()
+            assert [x["click"]["total"] for x in st] == [0, 1, 0]
+            await g.remove_ad(ids[0])
+            assert [a["id"] for a in g.ads] == ids[1:]
+            await g.admin_give(1, 500_00, 2)
+            found = await g.admin_find("A")
+            assert found and found[0]["id"] == 1
+            assert len(await g.admin_series(14)) == 14
+        finally:
+            await db.close()
+    run(scenario())
+
+
 def test_spin_levels_energy_confirm_and_currency():
     async def scenario():
         g, db, clock = await make_game()
@@ -291,10 +377,16 @@ def test_sell_60_undo_lock_and_bulk():
             with pytest.raises(GameError) as e:
                 await g.sell(1, [items[2]["id"]])
             assert e.value.code == "ITEM_LOCKED"
-            with pytest.raises(GameError):
-                await g.sell(1, [items[3]["id"], items[0]["id"]], True)  # Легендарный только по одному
             q = await g.sell_quote(1, "below_rare")
             assert set(q["ids"]) == {items[0]["id"], items[1]["id"]}
+            q = await g.sell_quote(1, "tier", tier=LEGENDARY)
+            assert q["ids"] == [items[3]["id"]] and q["top_tier"] == LEGENDARY
+            assert (await g.sell_quote(1, "all"))["count"] == 3  # замок не попадает
+            with pytest.raises(GameError) as e:  # Легендарный пачкой — только с подтверждением
+                await g.sell(1, [items[3]["id"], items[0]["id"]])
+            assert e.value.code == "CONFIRM_REQUIRED"
+            s = await g.sell(1, [items[3]["id"], items[0]["id"]], True)
+            assert s["sold"] == 2
             assert await ledger_ok(db, 1)
         finally:
             await db.close()
@@ -476,18 +568,60 @@ def init_data(uid: int, start: str | None = None, token: str = TOKEN, lang: str 
 
 class FakeBot:
     async def me(self):
-        return SimpleNamespace(username="TestBot")
+        return SimpleNamespace(username="TestBot", id=1)
 
     async def create_invoice_link(self, **kw):
         assert kw["currency"] == "XTR"
         return "https://t.me/$inv"
 
+    subscribed: set[int] = set()
 
-async def api_client(game):
-    cfg = Config(TOKEN, frozenset(), ":memory:", "https://x", "", "127.0.0.1", 0, True, False)
+    async def get_chat_member(self, chat_id, user_id):
+        return SimpleNamespace(status="member" if user_id in self.subscribed else "left")
+
+
+async def api_client(game, admins=frozenset()):
+    cfg = Config(TOKEN, frozenset(admins), ":memory:", "https://x", "", "127.0.0.1", 0, True, False)
     client = TestClient(TestServer(create_app(game, FakeBot(), cfg)))
     await client.start_server()
     return client
+
+
+def test_api_admin_access_and_luck_subscription():
+    from bot.web import admin_token
+    async def scenario():
+        g, db, _ = await make_game()
+        g.clock = time.time
+        client = await api_client(g, admins={9})
+        try:
+            player = {"Authorization": "tma " + init_data(5)}
+            admin = {"Authorization": "tma " + init_data(9)}
+            me = await (await client.post("/api/me", headers=player)).json()
+            assert me["is_admin"] is False and me["region"] == "RU"
+            assert (await client.post("/api/admin/overview", headers=player)).status == 403
+            assert (await client.post("/api/admin/overview", headers=admin)).status == 200
+            cfg = Config(TOKEN, frozenset({9}), "", "https://x", "", "", 0, True, False)
+            key = {"Authorization": "admin " + admin_token(cfg, 9)}
+            assert (await client.post("/api/admin/overview", headers=key)).status == 200
+            bad = {"Authorization": "admin " + admin_token(cfg, 5)}  # ключ не админа
+            assert (await client.post("/api/admin/overview", headers=bad)).status in (401, 403)
+            r = await client.post("/api/admin/luck_event/start", headers=admin,
+                                  json={"mult": 3, "spins": 10, "hours": 2, "channel": "@test_chan"})
+            assert r.status == 200
+            r = await client.post("/api/luck/claim", headers=player)
+            assert (await r.json())["error"]["code"] == "NOT_SUBSCRIBED"
+            FakeBot.subscribed.add(5)
+            r = await client.post("/api/luck/claim", headers=player)
+            assert (await r.json()) == {"mult": 3.0, "spins": 10}
+            r = await client.post("/api/admin/boost", headers=admin, json={"id": 5, "tier": 4})
+            assert (await r.json())["boost_min_tier"] == 4
+            r = await client.post("/api/spin", headers=player, json={"count": 1})
+            assert (await r.json())["drops"][0]["tier"]["idx"] >= 4
+        finally:
+            FakeBot.subscribed.clear()
+            await client.close()
+            await db.close()
+    run(scenario())
 
 
 def test_api_idempotency_and_races():

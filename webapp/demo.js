@@ -8,7 +8,7 @@
   if (!C || !D) return;
   const G = D.game, LAD = C.ladder_cents;
   const EPIC = 3, LEGENDARY = 4, RARE = 2, SECRET = 6;
-  const KEY = "dozvon-demo-v15";
+  const KEY = "dozvon-demo-v16";
   const now = () => Date.now() / 1000;
   const MSK = 3 * 3600;
   const dayKey = ts => new Date((ts + MSK) * 1000).toISOString().slice(0, 10);
@@ -50,11 +50,13 @@
 
   // ---------- шансы ----------
   function applyLuck(odds, m) {
-    if (m <= 1) return { ...odds };
     const keys = Object.keys(odds).map(Number);
+    if (m <= 1 || keys.length < 3) return { ...odds };
     const top = [...keys].sort((a, b) => odds[b] - odds[a]).slice(0, 2);
     const out = {};
     keys.filter(k => !top.includes(k)).forEach(k => { out[k] = odds[k] * m; });
+    const boosted = Object.values(out).reduce((a, b) => a + b, 0);
+    if (boosted > 0.9) Object.keys(out).forEach(k => { out[k] *= 0.9 / boosted; }); // как на сервере
     const rest = 1 - Object.values(out).reduce((a, b) => a + b, 0);
     const cs = top.reduce((a, k) => a + odds[k], 0);
     top.forEach(k => { out[k] = odds[k] * rest / cs; });
@@ -104,15 +106,17 @@
 
   async function init() {
     try { S = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) { S = null; }
-    if (S && S.v === 1) return;
+    if (S && S.v === 2) return;
     const t = now();
     S = {
-      v: 1, nextId: 1, items: [], editions: {}, drops: [], ledger: [], sales: [], lots: [], counters: {}, seeds: [], payments: [], feed: [],
+      v: 2, nextId: 1, items: [], editions: {}, drops: [], ledger: [], sales: [], lots: [], counters: {}, seeds: [], payments: [], feed: [], devices: [], ads: [],
+      luck_event: { id: 1, mult: 5, spins: 20, until: t + 3 * 86400, url: "https://t.me/telegram", chat_id: "@telegram", title: "Удача ×5 для всех", started_at: t },
       user: {
         id: 1, name: "Гость", created_at: t - 3 * 86400, balance: G.start_cents, attempts: 0, energy: G.energy.max, energy_ts: t, xp: 0,
         total_spins: 0, pity_epic: 0, pity_legend: 0, luck_mult: 1, luck_left: 0, upgrade_bonus: 0, vip_until: null, vip_day: null,
         slots_extra: 0, slots_bought: 0, start_pack: false, starter_used: false, country: "RU", country_confirmed: false,
         country_changed_at: null, settings: {}, showcase: [], badges: [], gift_day: dayKey(t - 86400), gift_streak: 2, ref_count: 2,
+        region: null, boost_min_tier: null, username: "guest",
       },
       others: OTHERS.map(([name, friend, spins], i) => ({ id: 100 + i, name, friend, spins: spins || 0, country: ["RU", "KZ", "BY", "UZ", "RU", "KG", "AM", "RU"][i], xp: 300 + ((i * 397) % 2400), extra: 1500000 + ((i * 7919) % 9) * 900000 })),
       raffle: {},
@@ -171,7 +175,7 @@
   }
   function issue(uid, tier, u1, source, state = "free") {
     // номер — из страны владельца, как на сервере
-    const country = uid === 1 ? S.user.country : (S.others.find(o => o.id === uid) || {}).country || "RU";
+    const country = uid === 1 ? (S.user.region || S.user.country) : (S.others.find(o => o.id === uid) || {}).country || "RU";
     const pool = (D.pool[country] || D.pool.RU)[tier];
     const size = +(C.editions[String(tier)] || 1);
     const start = Math.floor(u1 * pool.length);
@@ -264,7 +268,7 @@
     const common = oddsObj(C.levels[0]);
     const odds = u.luck_left > 0 ? applyLuck(common, u.luck_mult) : common;
     const [qa, qb] = pityChances(odds, u.pity_epic, u.pity_legend);
-    const lastDrop = [...S.drops].reverse().find(d => d.action === "spin");
+    const lastDrop = [...S.drops].reverse().find(d => d.action === "spin" && d.kind !== "device");
     const sale = [...S.sales].reverse().find(s => !s.undone && s.undo_until > t);
     const changeAfter = u.country_changed_at ? u.country_changed_at + C.currency.change_days * 86400 : null;
     const td = taskDays();
@@ -294,7 +298,11 @@
       last_drop: lastDrop ? view(S.items.find(i => i.id === lastDrop.item_id)) : null,
       last_sale: sale ? { id: sale.id, amount_cents: sale.amount_cents, undo_until: sale.undo_until, count: sale.item_ids.length } : null,
       stars_enabled: true, ref_link: "https://t.me/твой_бот?start=r1",
-      ad: { id: 0, placeholder: true, icon: "📣", title: "Ваша реклама здесь", text: "Её увидит каждый игрок", button: "Связаться", url: "https://t.me/" },
+      ads: S.ads.length ? S.ads.map(({ id, title, text, url, button, icon }) => ({ id, title, text, url, button, icon }))
+        : [{ id: 0, placeholder: true, icon: "📣", title: "Ваша реклама здесь", text: "Её увидит каждый игрок", button: "Связаться", url: "https://t.me/" }],
+      region: u.region || u.country, is_admin: true,
+      device_free: counter("device_free", 0, "all") ? 0 : 1,
+      luck_event: S.luck_event && S.luck_event.until > t ? { id: S.luck_event.id, mult: S.luck_event.mult, spins: S.luck_event.spins, until: S.luck_event.until, url: S.luck_event.url, title: S.luck_event.title, claimed: !!counter("luck_claim:" + S.luck_event.id, 0, "event") } : null,
     };
   };
   H.country = b => {
@@ -343,6 +351,7 @@
         const m = G.starter.min_tier, s = sumP(odds, x => x >= m);
         odds = Object.fromEntries(Object.entries(odds).filter(([x]) => +x >= m).map(([x, q]) => [x, q / s]));
       }
+      if (u.boost_min_tier != null && i === 0) odds = restrict(odds, u.boost_min_tier);
       const nonce = ++p.nonce;
       const u0 = await roll(p.server_seed, p.client_seed, nonce, 0), u1 = await roll(p.server_seed, p.client_seed, nonce, 1);
       const tier = pickTier(u0, odds);
@@ -358,6 +367,7 @@
     u.balance -= cost; u.attempts -= useA; u.energy = e - useE; u.energy_ts = ets;
     u.pity_epic = pe; u.pity_legend = pl; u.luck_left = luckLeft; u.xp += xpGain; u.total_spins += count;
     if (starter) u.starter_used = true;
+    u.boost_min_tier = null;
     ledger("rub", -cost, "spin_" + lv.key); ledger("attempts", -useA, "spin");
     if (common && useC) counter("coin_spins", useC);
     if (!common) counter("upper_spins", count);
@@ -381,49 +391,136 @@
   H.item = b => view(myItem(b.id));
   H.seen = () => { mine(["free", "listed", "overflow"]).forEach(i => { i.is_new = false; }); return { ok: true }; };
   H.favorite = b => { const it = myItem(b.id); it.favorite = !it.favorite; return { favorite: it.favorite }; };
+  const myDev = id => { const d = S.devices.find(x => x.id === +id && x.user_id === 1 && x.state === "free"); if (!d) err("Не найдено", "CONFLICT"); return d; };
   H.lock = b => {
-    const it = myItem(b.id), locked = b.locked !== false;
-    if (!locked && it.locked && !b.confirm) err("Снять замок? Номер снова можно будет продать", "CONFIRM_REQUIRED");
+    const it = b.kind === "device" ? myDev(b.id) : myItem(b.id), locked = b.locked !== false;
+    if (!locked && it.locked && !b.confirm) err("Снять замок? Его снова можно будет продать", "CONFIRM_REQUIRED");
     it.locked = locked;
     if (locked) taskEvent("lock");
     return { locked };
   };
   H.showcase = b => { const ids = (b.ids || []).map(Number).slice(0, 3); if (ids.length) owned(ids, ["free", "listed"]); S.user.showcase = ids; return { showcase: ids }; };
+  const devPrice = d => d.price_cents;
+  const sellPrice = (r, kind) => Math.floor((kind === "device" ? devPrice(r) : LAD[r.tier]) * C.sell_system_pct / 100);
+  function sellRows(ids, kind) {
+    if (kind !== "device") return owned(ids, ["free", "overflow"]);
+    ids = [...new Set((ids || []).map(Number))];
+    if (!ids.length) err("Ничего не выбрано");
+    const rows = S.devices.filter(d => d.user_id === 1 && d.state === "free" && ids.includes(d.id));
+    if (rows.length !== ids.length) err("Часть телефонов уже недоступна. Обнови коллекцию", "CONFLICT");
+    return rows;
+  }
   H.sell = b => {
-    const items = owned(b.ids || [], ["free", "overflow"]);
-    if (items.some(i => i.locked)) err("Номер под замком. Сними замок, чтобы продать", "ITEM_LOCKED");
+    const kind = b.kind === "device" ? "device" : "number", items = sellRows(b.ids || [], kind);
+    if (items.some(i => i.locked)) err("Под замком не продаётся. Сними замок, чтобы продать", "ITEM_LOCKED");
     const top = Math.max(...items.map(i => i.tier));
-    if (top >= LEGENDARY && items.length > 1) err("Легендарные и выше продаются только по одному");
     if (top >= EPIC && !b.confirmed) err("Подтверди продажу", "CONFIRM_REQUIRED");
-    const total = items.reduce((a, i) => a + Math.floor(LAD[i.tier] * C.sell_system_pct / 100), 0);
+    const total = items.reduce((a, i) => a + sellPrice(i, kind), 0);
     items.forEach(i => { i.state = "gone"; i.gone_reason = "sold"; });
-    const t = now(), sale = { id: S.sales.length + 1, item_ids: items.map(i => i.id), amount_cents: total, created_at: t, undo_until: t + G.undo_sell.minutes * 60, undone: false };
+    const t = now(), sale = { id: S.sales.length + 1, kind, item_ids: items.map(i => i.id), amount_cents: total, created_at: t, undo_until: t + G.undo_sell.minutes * 60, undone: false };
     S.sales.push(sale);
-    add(total, 0, "sell");
+    add(total, 0, kind === "device" ? "sell_device" : "sell");
     taskEvent("sell", items.length);
     promoteOverflow();
     return { sale_id: sale.id, cents: total, sold: items.length, undo_until: sale.undo_until };
   };
   H["sales/undo"] = b => {
-    const sale = S.sales.find(s => s.id === +b.sale_id);
+    const sale = S.sales.find(x => x.id === +b.sale_id);
     if (!sale || sale.undone) err("Эту продажу уже отменили", "CONFLICT");
     if (sale.undo_until < now()) err("Отменить можно только в течение 10 минут", "NOT_ALLOWED_YET");
     if (counter("undo") >= G.undo_sell.per_day) err("Отменять продажу можно 5 раз в сутки", "DAILY_LIMIT");
-    if (S.user.balance < sale.amount_cents) err(`Не хватает ${money(sale.amount_cents - S.user.balance)}, чтобы вернуть номера`, "NOT_ENOUGH_COINS");
-    const places = place(sale.item_ids.length);
-    sale.item_ids.forEach((id, k) => {
-      const it = S.items.find(i => i.id === id && i.gone_reason === "sold");
-      if (it) { it.state = places[k]; it.gone_reason = null; it.overflow_until = places[k] === "overflow" ? now() + C.inventory.overflow_hours * 3600 : null; }
-    });
+    if (S.user.balance < sale.amount_cents) err(`Не хватает ${money(sale.amount_cents - S.user.balance)}, чтобы вернуть проданное`, "NOT_ENOUGH_COINS");
+    if (sale.kind === "device") sale.item_ids.forEach(id => { const d = S.devices.find(x => x.id === id && x.gone_reason === "sold"); if (d) { d.state = "free"; d.gone_reason = null; } });
+    else {
+      const places = place(sale.item_ids.length);
+      sale.item_ids.forEach((id, k) => {
+        const it = S.items.find(i => i.id === id && i.gone_reason === "sold");
+        if (it) { it.state = places[k]; it.gone_reason = null; it.overflow_until = places[k] === "overflow" ? now() + C.inventory.overflow_hours * 3600 : null; }
+      });
+    }
     sale.undone = true;
     add(-sale.amount_cents, 0, "sell_undo");
     counter("undo", 1);
-    return { restored: sale.item_ids.length };
+    return { restored: sale.item_ids.length, kind: sale.kind || "number" };
   };
   H["sell/quote"] = b => {
-    let rows = mine(["free", "overflow"]).filter(i => !i.locked && i.tier < LEGENDARY);
-    rows = b.mode === "below_rare" || !b.mode ? rows.filter(i => i.tier < RARE) : rows.filter(i => LAD[i.tier] < +b.max_cents);
-    return { ids: rows.map(i => i.id), count: rows.length, cents: rows.reduce((a, i) => a + Math.floor(LAD[i.tier] * C.sell_system_pct / 100), 0) };
+    const kind = b.kind === "device" ? "device" : "number";
+    let rows = kind === "device" ? S.devices.filter(d => d.user_id === 1 && d.state === "free" && !d.locked) : mine(["free", "overflow"]).filter(i => !i.locked);
+    const price = r => kind === "device" ? devPrice(r) : LAD[r.tier];
+    if (!b.mode || b.mode === "below_rare") rows = rows.filter(i => i.tier < RARE);
+    else if (b.mode === "cheaper") rows = rows.filter(i => price(i) < +b.max_cents);
+    else if (b.mode === "tier") rows = rows.filter(i => i.tier === +b.tier);
+    return { ids: rows.map(i => i.id), count: rows.length, cents: rows.reduce((a, i) => a + sellPrice(i, kind), 0), top_tier: rows.length ? Math.max(...rows.map(i => i.tier)) : null };
+  };
+
+  // ---------- кейс «Телефоны» ----------
+  const MODELS = C.devices, CASES = C.device_cases;
+  function devView(d) {
+    const m = MODELS.find(x => x.key === d.model), kase = CASES[0], same = MODELS.filter(x => x.tier === m.tier);
+    const w = x => x.key === "nokia3310" ? 1 : x.key === "vertu_signature" ? 3 : x.key === "nokia8800" ? 5 : 1;
+    const o = (kase.odds.find(x => x.tier === m.tier) || { p: 0 }).p * w(m) / same.reduce((a, x) => a + w(x), 0);
+    return { id: d.id, kind: "device", user_id: d.user_id, ...m, tier: C.tiers[d.tier], price_cents: d.price_cents, sell_cents: sellPrice(d, "device"),
+      one_in: o ? Math.max(1, Math.round(1 / o)) : null, locked: d.locked, is_new: d.is_new, state: d.state, source: d.source, created_at: d.created_at };
+  }
+  function pickModel(tier, u) {
+    const ms = MODELS.filter(m => m.tier === tier), w = m => m.key === "nokia3310" ? 1 : m.key === "vertu_signature" ? 3 : m.key === "nokia8800" ? 5 : 1;
+    let x = u * ms.reduce((a, m) => a + w(m), 0);
+    for (const m of ms) { x -= w(m); if (x < 0) return m; }
+    return ms[ms.length - 1];
+  }
+  const restrict = (odds, m) => { const mx = Math.max(...Object.keys(odds).map(Number)); m = Math.min(m, mx); const s = sumP(odds, t => t >= m); return Object.fromEntries(Object.entries(odds).filter(([t]) => +t >= m).map(([t, p]) => [t, p / s])); };
+  H["case/spin"] = async b => {
+    const kase = CASES.find(c => c.key === (b.case || "phones"));
+    if (!kase) err("Нет такого кейса");
+    const count = +b.count || 1, u = S.user, t = now();
+    if (!C.counts.includes(count)) err("Можно открыть ×1, ×3, ×5 или ×10");
+    if (S.devices.filter(d => d.user_id === 1 && d.state === "free").length + count > C.inventory.slots) err("Полка телефонов заполнена: продай лишние", "INVENTORY_FULL");
+    const free = count === 1 && kase.free_first && !counter("device_free", 0, "all");
+    const cost = free ? 0 : count * kase.price_cents;
+    if (cost > u.balance) err(`Не хватает ${money(cost - u.balance)}. Продай номера или выполни задания`, "NOT_ENOUGH_COINS", { need_cents: cost - u.balance });
+    if (cost && !b.confirmed && (cost >= C.confirm_from_cents || cost > u.balance * C.confirm_balance_share)) err(`Подтверди покупку: ${money(cost)}`, "CONFIRM_REQUIRED", { cost_cents: cost });
+    const p = pair(), drops = [];
+    let luckLeft = u.luck_left;
+    for (let i = 0; i < count; i++) {
+      let odds = Object.fromEntries(kase.odds.map(o => [o.tier, o.p])), luck = 1;
+      if (luckLeft > 0) { luck = u.luck_mult; odds = applyLuck(odds, luck); luckLeft--; }
+      if (u.boost_min_tier != null && i === 0) odds = restrict(odds, u.boost_min_tier);
+      const nonce = ++p.nonce;
+      const u0 = await roll(p.server_seed, p.client_seed, nonce, 0), u1 = await roll(p.server_seed, p.client_seed, nonce, 1);
+      const tier = pickTier(u0, odds), m = pickModel(tier, u1);
+      const d = { id: S.nextId++, user_id: 1, model: m.key, tier, price_cents: m.price_cents, source: free ? "free" : "case", state: "free", locked: false, is_new: true, created_at: t };
+      S.devices.push(d);
+      S.drops.push({ id: S.drops.length + 1, kind: "device", item_id: d.id, action: "case", level: kase.key, tier, odds, u0, seed_id: p.id, server_hash: p.server_hash, client_seed: p.client_seed, nonce, created_at: t });
+      drops.push({ ...devView(d), fair: { server_hash: p.server_hash, client_seed: p.client_seed, nonce } });
+    }
+    const before = levelFromXp(u.xp)[0], xpGain = count * Math.max(10, Math.floor(kase.price_cents / 10000));
+    u.balance -= cost; u.luck_left = luckLeft; u.xp += xpGain; u.total_spins += count; u.boost_min_tier = null;
+    ledger("rub", -cost, "case_" + kase.key);
+    if (free) counter("device_free", 1, "all");
+    counter("spins", count); taskEvent("spin", count);
+    return { drops, case: kase.key, paid: { cents: cost, free }, level_up: levelFromXp(u.xp)[0] > before, player_level: levelFromXp(u.xp)[0] };
+  };
+  H.devices = b => {
+    let rows = S.devices.filter(d => d.user_id === 1 && d.state === "free" && d.tier >= (+b.min_tier || 0));
+    rows.sort(b.sort === "new" ? (x, y) => y.id - x.id : (x, y) => y.tier - x.tier || y.price_cents - x.price_cents || y.id - x.id);
+    const all = S.devices.filter(d => d.user_id === 1 && d.state === "free"), counts = {};
+    all.forEach(d => { counts[d.tier] = (counts[d.tier] || 0) + 1; });
+    return { items: rows.map(devView), counts, value_cents: all.reduce((a, d) => a + d.price_cents, 0), total: all.length, slots: C.inventory.slots };
+  };
+  H["devices/seen"] = () => { S.devices.forEach(d => { if (d.user_id === 1) d.is_new = false; }); return { ok: true }; };
+  H.region = b => {
+    if (!C.regions.includes(String(b.region))) err("Такой страны нет в списке");
+    S.user.region = String(b.region);
+    return { region: S.user.region };
+  };
+  H["luck/claim"] = () => {
+    const ev = S.luck_event, u = S.user;
+    if (!ev || ev.until < now()) err("Акция удачи закончилась", "NOT_ALLOWED_YET");
+    if (counter("luck_claim:" + ev.id, 0, "event")) err("Удачу этой акции ты уже получил", "CONFLICT");
+    if (u.luck_left > 0 && u.luck_mult > ev.mult) err("У тебя уже действует удача сильнее. Потрать её и возвращайся", "CONFLICT");
+    u.luck_left = Math.max(ev.spins, u.luck_mult === ev.mult ? u.luck_left : 0); u.luck_mult = ev.mult;
+    counter("luck_claim:" + ev.id, 1, "event");
+    return { mult: ev.mult, spins: ev.spins };
   };
   H.contract = async b => {
     const cc = C.contracts, items = owned(b.ids || []);
@@ -616,8 +713,9 @@
   H.fair = () => {
     const p = pair();
     const rolls = [...S.drops].reverse().slice(0, 50).map(d => {
-      const s = S.seeds.find(x => x.id === d.seed_id), it = S.items.find(i => i.id === d.item_id);
-      return { id: d.id, action: d.action, level: d.level || null, tier: d.tier, u0: d.u0, odds: d.odds, server_hash: d.server_hash, client_seed: d.client_seed, nonce: d.nonce, server_seed: s && s.revealed_at ? s.server_seed : null, number: it ? formatNumber(it.country, it.op, it.sub) : null, created_at: d.created_at };
+      const s = S.seeds.find(x => x.id === d.seed_id), it = d.kind === "device" ? null : S.items.find(i => i.id === d.item_id);
+      const dv = d.kind === "device" ? S.devices.find(x => x.id === d.item_id) : null, dm = dv && MODELS.find(m => m.key === dv.model);
+      return { id: d.id, action: d.action, level: d.level || null, tier: d.tier, u0: d.u0, odds: d.odds, server_hash: d.server_hash, client_seed: d.client_seed, nonce: d.nonce, server_seed: s && s.revealed_at ? s.server_seed : null, number: it ? formatNumber(it.country, it.op, it.sub) : dm ? `${dm.brand} ${dm.name}` : null, created_at: d.created_at };
     });
     return { server_hash: p.server_hash, client_seed: p.client_seed, nonce: p.nonce, rolls };
   };
@@ -699,8 +797,101 @@
     return { granted: p.title };
   };
 
+  // ---------- админка (демо: данные этой вкладки) ----------
+  const adNums = id => {
+    const out = {}, today = dayKey(now());
+    for (const kind of ["view", "click"]) {
+      const ks = Object.keys(S.counters).filter(k => k.endsWith("|ad_" + kind + ":" + id));
+      const td = ks.filter(k => k.startsWith(today));
+      out[kind] = { total: ks.reduce((a, k) => a + S.counters[k], 0), users: ks.length ? 1 : 0, today: td.reduce((a, k) => a + S.counters[k], 0), users_today: td.length ? 1 : 0 };
+    }
+    return out;
+  };
+  const adsStats = () => S.ads.map(a => ({ ad: a, ...adNums(a.id) }));
+  const luckStats = () => S.luck_event ? { ...S.luck_event, active: S.luck_event.until > now(), claims: counter("luck_claim:" + S.luck_event.id, 0, "event") ? 1 : 0 } : null;
+  const brief = o => o.id === 1
+    ? { id: 1, name: S.user.name, username: S.user.username, balance_cents: S.user.balance, level: levelFromXp(S.user.xp)[0], total_spins: S.user.total_spins, created_at: S.user.created_at, last_seen: now(), country: S.user.country, is_blocked: false }
+    : { id: o.id, name: o.name, username: null, balance_cents: 250000 + o.id * 13000, level: levelFromXp(o.xp)[0], total_spins: 40 + o.id % 50, created_at: S.user.created_at - 86400 * (o.id % 9), last_seen: now() - 3600 * (o.id % 20), country: o.country, is_blocked: false };
+  H["admin/overview"] = () => {
+    const t = now(), d0 = dayKey(t), drops = S.drops.filter(d => dayKey(d.created_at) === d0 && (d.action === "spin" || d.action === "case"));
+    const byTier = {}; drops.forEach(d => { byTier[d.tier] = (byTier[d.tier] || 0) + 1; });
+    const reasons = {}; S.ledger.filter(l => l.currency === "rub" && dayKey(l.created_at) === d0).forEach(l => { reasons[l.reason] = (reasons[l.reason] || 0) + l.delta; });
+    const series = Array.from({ length: 14 }, (_, i) => {
+      const day = dayKey(t - (13 - i) * 86400), mine = S.drops.filter(d => dayKey(d.created_at) === day).length;
+      const k = (i * 7919) % 13;
+      return { day, new: 3 + k + (i > 9 ? 6 : 0), active: 9 + k * 2 + i * 2 + (mine ? 1 : 0), spins: 60 + k * 9 + i * 11 + mine, stars: i % 4 === 0 ? 49 : 0 };
+    });
+    return {
+      stats: { users: S.others.length + 1, alive: S.others.length + 1, new_today: series[13].new, dau: series[13].active, spins_today: series[13].spins,
+        balance_total_cents: S.user.balance + 9_870_000, reasons: Object.entries(reasons).map(([reason, cents]) => ({ reason, cents })).sort((a, b) => b.cents - a.cents),
+        inflow_per_active_cents: 320000, stars_month: S.payments.reduce((a, p) => a + p.stars, 0) + 147, stars_total: 1240, referrals: 2,
+        drops_by_tier: Object.entries(byTier).map(([tier, n]) => ({ tier: +tier, n })), editions_low: [] },
+      series, ads: adsStats(), ads_max: 3, luck_event: luckStats(), luck_mults: [2, 3, 5, 10], luck_max_spins: 100, ads_contact: "ninety97", tiers: C.tiers,
+    };
+  };
+  H["admin/users"] = b => {
+    const q = String(b.q || "").trim().toLowerCase().replace(/^@/, "");
+    const all = [{ id: 1 }, ...S.others].map(brief);
+    return { users: q ? all.filter(u => String(u.id) === q || (u.name || "").toLowerCase().includes(q) || (u.username || "").includes(q)) : all };
+  };
+  H["admin/user"] = b => {
+    const id = +b.id;
+    const o = id === 1 ? { id: 1 } : S.others.find(x => x.id === id);
+    if (!o) err("Игрок не найден", "CONFLICT");
+    const items = {}, devs = {};
+    S.items.filter(i => i.user_id === id && i.state !== "gone").forEach(i => { items[i.tier] = (items[i.tier] || 0) + 1; });
+    S.devices.filter(d => d.user_id === id && d.state === "free").forEach(d => { devs[d.tier] = (devs[d.tier] || 0) + 1; });
+    const me = id === 1;
+    return { ...brief(o), attempts: me ? S.user.attempts : 0, xp: me ? S.user.xp : o.xp, region: me ? (S.user.region || S.user.country) : o.country,
+      luck: me ? { mult: S.user.luck_mult, spins_left: S.user.luck_left } : (S.adminLuck && S.adminLuck[id]) || { mult: 1, spins_left: 0 },
+      boost_min_tier: me ? S.user.boost_min_tier : (S.adminBoost && S.adminBoost[id] != null ? S.adminBoost[id] : null),
+      vip_until: null, ref_count: me ? S.user.ref_count : 0, ref_id: null, items, devices: devs,
+      value_cents: collectionValue(id) + S.devices.filter(d => d.user_id === id && d.state === "free").reduce((a, d) => a + d.price_cents, 0) + (me ? 0 : o.extra),
+      best: null, stars: me ? S.payments.reduce((a, p) => a + p.stars, 0) : 0, ledger: me ? [...S.ledger].reverse().slice(0, 15) : [] };
+  };
+  H["admin/give"] = b => {
+    const id = +b.id, cents = Math.round(+b.rubles * 100) || 0, att = +b.attempts || 0;
+    if (id === 1) { if (S.user.balance + cents < 0 || S.user.attempts + att < 0) err("Баланс не может уйти в минус"); add(cents, att, "admin"); }
+    return H["admin/user"]({ id });
+  };
+  H["admin/luck"] = b => {
+    const id = +b.id, mult = +b.mult, spins = +b.spins;
+    if (!(mult >= 1 && mult <= 10) || !(spins >= 0 && spins <= 1000)) err("Удача от ×1 до ×10, спинов от 0 до 1000");
+    if (id === 1) { S.user.luck_mult = mult; S.user.luck_left = spins; } else { S.adminLuck = S.adminLuck || {}; S.adminLuck[id] = { mult, spins_left: spins }; }
+    return H["admin/user"]({ id });
+  };
+  H["admin/boost"] = b => {
+    const id = +b.id, tier = b.tier == null ? null : +b.tier;
+    if (id === 1) S.user.boost_min_tier = tier; else { S.adminBoost = S.adminBoost || {}; S.adminBoost[id] = tier; }
+    return H["admin/user"]({ id });
+  };
+  H["admin/ads/save"] = b => {
+    const title = String(b.title || "").trim(), text = String(b.text || "").trim(), url = String(b.url || "").trim();
+    const button = String(b.button || "").trim() || "Открыть", icon = String(b.icon || "").trim() || "📣";
+    if (!title || title.length > 40) err("Заголовок от 1 до 40 символов");
+    if (text.length > 80) err("Текст не длиннее 80 символов");
+    if (!url.startsWith("https://") || url.includes(" ")) err("Ссылка должна начинаться с https://");
+    if (b.id) { const a = S.ads.find(x => x.id === +b.id); if (!a) err("Такой рекламы нет", "CONFLICT"); Object.assign(a, { title, text, url, button, icon }); }
+    else { if (S.ads.length >= 3) err("Уже 3 рекламы. Сними одну, чтобы поставить новую"); S.ads.push({ id: Math.max(Math.floor(now()), ...S.ads.map(a => a.id + 1)), title, text, url, button, icon, created_at: now() }); }
+    return { ads: adsStats() };
+  };
+  H["admin/ads/remove"] = b => { S.ads = S.ads.filter(a => a.id !== +b.id); return { ads: adsStats() }; };
+  H["admin/luck_event/start"] = b => {
+    const mult = +b.mult, spins = +b.spins, hours = +b.hours, ch = String(b.channel || "").trim();
+    if (![2, 3, 5, 10].includes(mult)) err("Множитель: ×2, ×3, ×5, ×10");
+    if (!(spins >= 1 && spins <= 100)) err("Спинов с удачей от 1 до 100");
+    if (!(hours > 0 && hours <= 720)) err("Длительность от 1 часа до 30 дней");
+    const m = ch.match(/^(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]{4,32})\/?$/) || ch.match(/^@?([A-Za-z0-9_]{4,32})$/);
+    if (!m) err("Канал: @username или ссылка t.me/username");
+    const t = now();
+    S.luck_event = { id: Math.floor(t), mult, spins, until: t + hours * 3600, chat_id: "@" + m[1], url: "https://t.me/" + m[1], title: String(b.title || "").trim().slice(0, 40) || `Удача ×${mult} для всех`, started_at: t };
+    return { luck_event: luckStats(), warning: null };
+  };
+  H["admin/luck_event/stop"] = () => { S.luck_event = null; return { luck_event: null }; };
+  H["admin/broadcast"] = b => { if (!String(b.text || "").trim()) err("Текст рассылки от 1 до 3500 символов"); return { started: true, recipients: S.others.length + 1 }; };
+
   // ---------- вызов ----------
-  const READ = new Set(["config", "me", "inventory", "item", "market/mine", "fair", "friends", "feed", "history", "shop", "raffle", "upgrade/quote", "sell/quote"]);
+  const READ = new Set(["admin/overview", "admin/users", "admin/user", "devices", "config", "me", "inventory", "item", "market/mine", "fair", "friends", "feed", "history", "shop", "raffle", "upgrade/quote", "sell/quote"]);
   let ready = null, queue = Promise.resolve();
   const clone = x => JSON.parse(JSON.stringify(x));
   window.DemoServer = {

@@ -31,15 +31,20 @@ def tier_dict(i: int) -> dict:
     return {"idx": t.idx, "key": t.key, "name": t.name, "icon": t.icon, "color": t.color}
 
 
+LUCK_CAP = 0.9
+
+
 def apply_luck(odds: dict[int, float], m: float) -> dict[int, float]:
-    """Удача: все ступени, кроме двух самых частых, ×m; частые отдают разницу пропорционально."""
-    if m <= 1:
+    """Удача: все ступени, кроме двух самых частых, ×m; частые отдают разницу пропорционально.
+    При большом множителе (×5, ×10) редкие ступени вместе не больше 90%, пропорции между ними те же."""
+    if m <= 1 or len(odds) < 3:
         return dict(odds)
     common = sorted(odds, key=lambda t: odds[t], reverse=True)[:2]
     out = {t: p * m for t, p in odds.items() if t not in common}
+    boosted = sum(out.values())
+    if boosted > LUCK_CAP:
+        out = {t: p * LUCK_CAP / boosted for t, p in out.items()}
     rest = 1 - sum(out.values())
-    if rest <= 0:
-        raise ValueError("Слишком большой множитель удачи")
     c_sum = sum(odds[t] for t in common)
     for t in common:
         out[t] = odds[t] * rest / c_sum

@@ -3,6 +3,7 @@
 а validate() не даёт сохранить конфиг с суммой шансов не 100% или возвратом вне 78–82%."""
 import copy
 
+from bot.game.devices import case_return
 from bot.game.odds import consolidated
 from bot.game.tiers import expected_value
 
@@ -27,10 +28,21 @@ DEFAULTS: dict = {
         {"key": "legendary", "name": "Легендарная", "price_cents": 30_000 * R, "pity": False,
          "odds": {4: .9583, 5: .04, 6: .0017},
          "goal": {"tier": 5, "label": "Мифический+"}},
-        {"key": "elite", "name": "Элитная", "price_cents": 150_000 * R, "pity": False,
+        {"key": "elite", "name": "Мифическая", "price_cents": 150_000 * R, "pity": False,
          "odds": {5: .95, 6: .05},
          "goal": {"tier": 6, "label": "Секретный"}},
+        {"key": "secret", "name": "Секретная", "price_cents": 625_000 * R, "pity": False,
+         "odds": {6: 1.0},
+         "goal": {"tier": 6, "label": "Секретный"}},
     ],
+    # Кейс «Телефоны» (bot/game/devices.py): шансы ступеней, модель внутри ступени по весу. Возврат 80%
+    "device_cases": [
+        {"key": "phones", "name": "Телефоны", "price_cents": 16_990 * R, "free_first": True,
+         "odds": {0: .78359, 1: .147, 2: .05, 3: .015, 4: .004, 5: .0004, 6: .00001}},
+    ],
+    "ads_max": 3,
+    # «Удача для всех»: админ запускает множитель, игрок получает его за подписку на канал
+    "luck_event": {"mults": [2, 3, 5, 10], "max_spins": 100},
     "counts": [1, 3, 5, 10],
     "confirm_from_cents": 30_000 * R,
     "confirm_balance_share": 0.3,
@@ -157,6 +169,8 @@ def normalize(cfg: dict) -> dict:
     """После JSON ключи шансов становятся строками — приводим к int."""
     for lv in cfg["levels"]:
         lv["odds"] = {int(t): float(p) for t, p in lv["odds"].items()}
+    for case in cfg["device_cases"]:
+        case["odds"] = {int(t): float(p) for t, p in case["odds"].items()}
     return cfg
 
 
@@ -188,6 +202,13 @@ def validate(cfg: dict) -> list[str]:
             errors.append(f"{lv['name']}: нижняя ступень меньше 50%")
         if any(lv["odds"][a] < lv["odds"][b] for a, b in zip(tiers, tiers[1:])):
             errors.append(f"{lv['name']}: шансы должны убывать со ступенью")
+    for case in cfg["device_cases"]:
+        s = sum(case["odds"].values())
+        r = case_return(case["odds"], case["price_cents"])
+        if abs(s - 1) > 1e-6:
+            errors.append(f"Кейс {case['name']}: сумма шансов {s * 100:.2f}% вместо 100%")
+        elif not 0.78 <= r <= 0.82:
+            errors.append(f"Кейс {case['name']}: возврат {r * 100:.1f}% вне коридора 78–82%")
     for code, c in cfg["currency"]["countries"].items():
         if not c.get("rate") or c["rate"] <= 0:
             errors.append(f"Курс {code} должен быть больше нуля")

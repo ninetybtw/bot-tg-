@@ -67,7 +67,10 @@
     up: { sel: new Set(), cents: 0, target: null },
     rating: { scope: "friends", board: "collection" },
     oddsLevel: "common", wheelKind: "daily", items: [],
+    mode: "numbers", caseKey: "phones", boardDevice: null, slide: 0, colKind: "number", devs: [],
+    dcol: { min: 0, sort: "rare" },
   };
+  try { ui.mode = localStorage.getItem("mode") === "phones" ? "phones" : "numbers"; } catch (e) { /* без хранилища */ }
   try { ui.level = localStorage.getItem("level") || "common"; } catch (e) { /* без хранилища */ }
 
   // ---------- табло: перекидные цифры ----------
@@ -232,8 +235,14 @@
   function enter() { $main.classList.remove("enter"); void $main.offsetWidth; $main.classList.add("enter"); }
 
   // ---------- ИГРАТЬ ----------
-  const levelColor = key => ({ common: "var(--neon)", rare: "var(--t2)", epic: "var(--t3)", legendary: "var(--t4)", elite: "var(--t6)" })[key];
+  const levelColor = key => ({ common: "var(--neon)", rare: "var(--t2)", epic: "var(--t3)", legendary: "var(--t4)", elite: "var(--t5)", secret: "var(--t6)" })[key] || "var(--neon)";
+  const curCase = () => CFG.device_cases.find(c => c.key === ui.caseKey) || CFG.device_cases[0];
+  const phonesMode = () => ui.mode === "phones";
   function spinPlan() {
+    if (phonesMode()) {
+      const c = curCase(), free = ME.device_free && ui.count === 1;
+      return { e: 0, a: 0, c: free ? 0 : ui.count, cost: free ? 0 : ui.count * c.price_cents, free, kase: c };
+    }
     const lv = CFG.levels.find(l => l.key === ui.level), n = ui.count;
     if (lv.key !== "common") return { e: 0, a: 0, c: n, cost: n * lv.price_cents, lv };
     const e = Math.min(ME.energy.now, n), a = Math.min(ME.attempts, n - e), c = n - e - a;
@@ -241,28 +250,47 @@
   }
   function spinCostLabel() {
     const p = spinPlan();
+    if (phonesMode()) return p.free ? "Первый кейс бесплатно" : money(p.cost);
     const parts = [];
     if (p.e) parts.push(`⚡${p.e}`);
     if (p.a) parts.push(`🎟${p.a}`);
     if (p.c) parts.push(money(p.cost));
     return !p.c && !p.a ? `Бесплатно · ⚡${p.e}` : parts.join(" + ");
   }
+  const luckBadge = () => ME.luck ? `<span class="badge-luck">🍀 ×${String(ME.luck.mult).replace(".", ",")} · ${ME.luck.spins_left}</span>` : "";
   function pityLine() {
+    if (phonesMode()) {
+      const c = curCase(), top = c.odds.filter(o => o.tier >= 4).reduce((a, o) => a + o.p, 0);
+      return `<div class="pity"><span>Легендарный+ <b>${pct(top, 2)}</b></span><span class="grow"></span>${luckBadge() || `<span>Nokia 3310 · 1 из ${int(1 / (c.odds.find(o => o.tier === 5).p / 9))}</span>`}</div>`;
+    }
     if (ui.level !== "common") {
       const lv = CFG.levels.find(l => l.key === ui.level);
-      return `<div class="pity"><span>От ${esc(tierOf(lv.min_tier).name.toLowerCase())}а · ${esc(lv.goal.label)} <b>${pct(lv.goal.p, 2)}</b></span><span class="grow"></span><span>сегодня ещё ${ME.upper_spins_left}</span></div>`;
+      return `<div class="pity"><span>Не ниже <b class="tcol" style="color:var(--t${lv.min_tier})">${tierOf(lv.min_tier).icon}</b> · ${esc(lv.goal.label)} <b>${pct(lv.goal.p, 2)}</b></span><span class="grow"></span><span>сегодня ещё ${ME.upper_spins_left}</span></div>`;
     }
     if (ME.starter && ui.count === 5) return `<div class="starter">🎁 Первый ×5 — Редкий или выше гарантирован</div>`;
     const p = ME.pity, hard = CFG.pity.epic_plus.hard;
     const prog = 1 - p.epic_in / hard;
-    return `<div class="pity ${p.epic_chance > 0.05 ? "hot" : ""}"><span>Шанс Эпика сейчас <b>${pct(p.epic_chance)}</b></span>
+    return `<div class="pity ${p.epic_chance > 0.05 ? "hot" : ""}"><span>Шанс Эпика <b>${pct(p.epic_chance)}</b></span>
       <div class="bar"><i id="pitybar" style="width:0;background:var(--t3)" data-w="${Math.round(prog * 100)}"></i></div>
-      ${ME.luck ? `<span class="badge-luck">✨ ×${String(ME.luck.mult).replace(".", ",")} · ${ME.luck.spins_left}</span>` : `<span>гарантия ≤${p.epic_in}</span>`}</div>`;
+      ${luckBadge() || `<span>гарантия ≤${p.epic_in}</span>`}</div>`;
+  }
+  function ctrlHTML() {
+    if (phonesMode()) {
+      const c = curCase();
+      return `<div class="ctrl"><button class="dd" data-act="catalog"><span class="dd-l">📖 Каталог</span></button>
+        <button class="dd right" data-act="dd-case" style="--lc:var(--gold)"><span class="dd-l">📦 ${esc(c.name)}</span><span class="dd-p">${money(c.price_cents)}</span><i>▾</i></button></div>`;
+    }
+    const lv = CFG.levels.find(l => l.key === ui.level), r = CFG.currency.countries[ME.region] || {};
+    return `<div class="ctrl"><button class="dd" data-act="dd-region" aria-label="Страна номеров"><span class="dd-l">${r.flag || "🌍"} ${esc(r.name || ME.region)}</span><i>▾</i></button>
+      <button class="dd right" data-act="dd-level" style="--lc:${levelColor(lv.key)}" aria-label="Уровень крутки"><span class="dd-l"><b class="tcol" style="color:var(--lc)">${tierOf(lv.min_tier).icon}</b> ${esc(lv.name)}</span><span class="dd-p">${money(lv.price_cents)}</span><i>▾</i></button></div>`;
   }
   function renderPlay() {
-    const t = ME.today, last = ME.last_drop && ME.last_drop.country === ME.country ? ME.last_drop : null, it = ui.boardItem || last;
+    const t = ME.today, last = ME.last_drop && ME.last_drop.country === ME.region ? ME.last_drop : null;
+    const it = phonesMode() ? ui.boardDevice : (ui.boardItem || last);
     const claimable = t.tasks.filter(x => x.progress >= x.target && !x.claimed).length;
     const done = t.tasks.filter(x => x.claimed).length;
+    const upper = phonesMode() ? "upper" : ui.level !== "common" ? "upper" : "";
+    const color = phonesMode() ? "var(--gold)" : levelColor(ui.level);
     $main.className = "main noscroll";
     $main.innerHTML = `
       <div class="today">
@@ -271,42 +299,151 @@
         <button data-act="tasks" class="${claimable ? "ready" : ""}"><b>✅</b>${done}/${t.tasks.length}</button>
         <button data-act="raffle"><b>🎟</b>${t.tickets} бил.</button>
       </div>
-      ${adHTML()}
+      ${carouselHTML()}
       <div class="ticker" id="ticker"><div class="track"><span class="muted">Эпик+ у друзей и в игре появится здесь</span></div></div>
-      <div class="board-slot"><div class="board" id="board">${boardHTML(it)}</div></div>
+      <div class="modes" role="tablist"><button role="tab" class="${phonesMode() ? "" : "on"}" data-act="mode" data-v="numbers">📞 Номера</button>
+        <button role="tab" class="${phonesMode() ? "on" : ""}" data-act="mode" data-v="phones">📱 Телефоны${ME.device_free ? '<i class="free">1 бесплатно</i>' : ""}</button><span class="pill-bg"></span></div>
+      <div class="board-slot"><div class="board ${phonesMode() ? "case" : ""}" id="board">${phonesMode() ? caseBoardHTML(it) : boardHTML(it)}</div></div>
       ${pityLine()}
-      <div class="levels" id="levels">${CFG.levels.map(lv => `<button class="lv ${lv.key === ui.level ? "on" : ""}" data-act="level" data-v="${lv.key}" style="--lc:${levelColor(lv.key)}">
-        <span class="n">${esc(lv.name)}</span><span class="p">${money(lv.price_cents)}</span>
-        <span class="g">${esc(lv.goal.label)}<b>${pct(lv.goal.p, 2)}</b></span></button>`).join("")}</div>
-      <div class="seg">${CFG.counts.map(n => `<button class="${ui.count === n ? "on" : ""}" data-act="count" data-v="${n}">×${n}</button>`).join("")}</div>
-      <div class="spin-row"><button class="spin-btn ${ui.level !== "common" ? "upper" : ""}" style="--lc:${levelColor(ui.level)}" data-act="spin" id="spinbtn">КРУТИТЬ${ui.count > 1 ? " ×" + ui.count : ""}<small>${spinCostLabel()}</small></button></div>
+      ${ctrlHTML()}
+      <div class="seg compact">${CFG.counts.map(n => `<button class="${ui.count === n ? "on" : ""}" data-act="count" data-v="${n}">×${n}</button>`).join("")}</div>
+      <div class="spin-row"><button class="spin-btn ${upper}" style="--lc:${color}" data-act="spin" id="spinbtn">${phonesMode() ? "ОТКРЫТЬ" : "КРУТИТЬ"}${ui.count > 1 ? " ×" + ui.count : ""}<small>${spinCostLabel()}</small></button></div>
       <div class="under"><span id="etimer"></span><button class="link" data-act="odds">Шансы</button></div>`;
-    if (it) paintBoard(it, false);
+    $main.querySelector(".modes").classList.toggle("r", phonesMode());
+    if (it && !phonesMode()) paintBoard(it, false);
     const bar = document.getElementById("pitybar");
     if (bar) requestAnimationFrame(() => { bar.style.width = bar.dataset.w + "%"; });
-    const sel = $main.querySelector(".lv.on");
-    if (sel) sel.scrollIntoView({ inline: "center", block: "nearest" });
+    startCarousel();
     tick();
     loadFeed();
   }
-  // ---------- реклама ----------
-  function adHTML() {
-    const a = ME.ad;
-    if (!a) return "";
-    const fresh = ui.adSeen !== a.id; // показ считаем один раз за запуск игры
-    if (fresh) { ui.adSeen = a.id; if (!a.placeholder) api("ad", { id: a.id, kind: "view" }).catch(() => {}); }
-    return `<button class="ad ${fresh ? "in" : ""}" data-act="ad" aria-label="Реклама: ${esc(a.title)}"><span class="ad-ic">${esc(a.icon)}</span>
-      <span class="ad-body"><b>${esc(a.title)}</b>${a.text ? `<span>${esc(a.text)}</span>` : ""}</span><span class="ad-btn">${esc(a.button)}</span><i class="ad-mark">реклама</i></button>`;
+
+  // ---------- выпадающие списки над кнопкой «Крутить» ----------
+  let ddEl = null;
+  function closeDD() { if (ddEl) { const d = ddEl; ddEl = null; d.classList.remove("open"); setTimeout(() => d.remove(), 180); } }
+  function dropdown(anchor, title, items, onPick) {
+    closeDD();
+    const a = app.getBoundingClientRect(), r = anchor.getBoundingClientRect();
+    const d = document.createElement("div");
+    d.className = "dd-pop"; d.setAttribute("role", "listbox");
+    d.innerHTML = `<div class="dd-t">${esc(title)}</div>${items.map((x, i) => `<button class="dd-item ${x.on ? "on" : ""}" data-v="${esc(x.v)}" style="--i:${i};${x.lc ? `--lc:${x.lc}` : ""}" role="option" aria-selected="${!!x.on}">
+      <span class="dd-ic">${x.icon}</span><span class="grow"><b>${esc(x.name)}</b>${x.sub ? `<small>${x.sub}</small>` : ""}</span>${x.right ? `<span class="mono">${x.right}</span>` : ""}${x.on ? '<span class="ok">✓</span>' : ""}</button>`).join("")}`;
+    const w = Math.min(300, a.width - 24);
+    d.style.width = w + "px";
+    d.style.bottom = (a.bottom - r.top + 6) + "px";
+    const leftSide = r.left - a.left < a.width / 2;
+    d.style.left = Math.max(12, Math.min(a.width - w - 12, leftSide ? r.left - a.left : r.right - a.left - w)) + "px";
+    d.style.transformOrigin = leftSide ? "bottom left" : "bottom right";
+    d.onclick = e => { const b = e.target.closest(".dd-item"); if (b) { e.stopPropagation(); closeDD(); hap("s"); onPick(b.dataset.v); } };
+    app.append(d);
+    ddEl = d;
+    requestAnimationFrame(() => d.classList.add("open"));
+    const on = d.querySelector(".dd-item.on");
+    if (on) on.scrollIntoView({ block: "nearest" });
   }
-  function openAd() {
-    const a = ME.ad;
+  document.addEventListener("click", e => { if (ddEl && !e.target.closest(".dd-pop") && !e.target.closest(".dd")) closeDD(); }, true);
+  function levelDD(anchor) {
+    dropdown(anchor, "Уровень крутки", CFG.levels.map(lv => ({ v: lv.key, on: lv.key === ui.level, lc: levelColor(lv.key), icon: `<b class="tcol" style="color:${levelColor(lv.key)}">${tierOf(lv.min_tier).icon}</b>`,
+      name: lv.name, sub: `${esc(lv.goal.label)} ${pct(lv.goal.p, 2)}`, right: money(lv.price_cents) })), v => {
+      ui.level = v; try { localStorage.setItem("level", v); } catch (e) { /* */ } renderPlay();
+    });
+  }
+  function regionDD(anchor) {
+    dropdown(anchor, "Номера какой страны", CFG.regions.map(k => { const c = CFG.currency.countries[k]; return { v: k, on: k === ME.region, icon: c.flag, name: c.name, sub: esc((CFG.number_masks || {})[k] || "") }; }), async v => {
+      if (v === ME.region) return;
+      try { await api("region", { region: v }); ME.region = v; ui.boardItem = null; renderPlay(); toast(`${CFG.currency.countries[v].flag} Теперь выпадают номера: ${esc(CFG.currency.countries[v].name)}`); }
+      catch (e) { fail(e); }
+    });
+  }
+  function caseDD(anchor) {
+    dropdown(anchor, "Кейс", CFG.device_cases.map(c => ({ v: c.key, on: c.key === curCase().key, icon: "📦", name: c.name, sub: `Легендарный+ ${pct(c.odds.filter(o => o.tier >= 4).reduce((a, o) => a + o.p, 0), 2)}`, right: money(c.price_cents) })), v => { ui.caseKey = v; renderPlay(); });
+  }
+
+  // ---------- реклама и «Удача для всех»: карусель до 3 баннеров ----------
+  function slides() {
+    const out = [];
+    const ev = ME.luck_event;
+    if (ev && !ev.claimed) out.push({ luck: true, id: "luck", ev });
+    (ME.ads || []).forEach(a => out.push(a));
+    return out;
+  }
+  function carouselHTML() {
+    const s = slides();
+    if (!s.length) return "";
+    ui.slide = Math.min(ui.slide || 0, s.length - 1);
+    return `<div class="adc" id="adc" style="--n:${s.length}"><div class="adc-track" style="transform:translateX(${-ui.slide * 100}%)">${s.map((a, i) => a.luck ? `
+      <div class="ad luck" role="button" tabindex="0" data-act="luck-open" data-i="${i}"><span class="ad-ic">🍀</span>
+        <span class="ad-body"><b>${esc(a.ev.title)}</b><span>Подпишись — ×${a.ev.mult} на ${a.ev.spins} спинов</span></span>
+        <span class="ad-side"><i class="ad-mark">акция</i><button class="ad-btn" data-act="luck-claim">Забрать</button></span></div>` : `
+      <div class="ad" role="button" tabindex="0" data-act="ad" data-id="${a.id}" data-i="${i}"><span class="ad-ic">${esc(a.icon)}</span>
+        <span class="ad-body"><b>${esc(a.title)}</b>${a.text ? `<span>${esc(a.text)}</span>` : ""}</span><span class="ad-side"><i class="ad-mark">реклама</i><span class="ad-btn">${esc(a.button)}</span></span></div>`).join("")}</div>
+      ${s.length > 1 ? `<div class="adc-dots">${s.map((_, i) => `<i class="${i === ui.slide ? "on" : ""}"></i>`).join("")}</div>` : ""}</div>`;
+  }
+  function seenSlide() {
+    const a = slides()[ui.slide || 0];
+    ui.adSeen = ui.adSeen || new Set();
+    if (a && !a.luck && !a.placeholder && !ui.adSeen.has(a.id)) { ui.adSeen.add(a.id); api("ad", { id: a.id, kind: "view" }).catch(() => {}); }
+  }
+  function goSlide(i) {
+    const c = document.getElementById("adc");
+    const n = slides().length;
+    if (!c || n < 2) return;
+    ui.slide = (i + n) % n;
+    c.querySelector(".adc-track").style.transform = `translateX(${-ui.slide * 100}%)`;
+    c.querySelectorAll(".adc-dots i").forEach((d, k) => d.classList.toggle("on", k === ui.slide));
+    seenSlide();
+  }
+  let adTimer = null;
+  function startCarousel() {
+    seenSlide();
+    clearInterval(adTimer);
+    const c = document.getElementById("adc");
+    if (!c) return;
+    adTimer = setInterval(() => { if (!ui.busy && !sheetEl && document.getElementById("adc") === c) goSlide((ui.slide || 0) + 1); }, 5000);
+    let x0 = null;
+    c.addEventListener("pointerdown", e => { x0 = e.clientX; });
+    c.addEventListener("pointerup", e => {
+      if (x0 === null) return;
+      const dx = e.clientX - x0; x0 = null;
+      if (Math.abs(dx) > 40) { c.dataset.swiped = "1"; goSlide((ui.slide || 0) + (dx < 0 ? 1 : -1)); setTimeout(() => { delete c.dataset.swiped; }, 50); }
+    });
+  }
+  function openUrl(url) {
+    if (!LIVE) return toast(`Откроется ${esc(url)}`);
+    try { if (/^https:\/\/t\.me\//.test(url) && tg.openTelegramLink) tg.openTelegramLink(url); else tg.openLink(url); }
+    catch (e) { location.href = url; }
+  }
+  function openAd(el) {
+    if (document.getElementById("adc")?.dataset.swiped) return;
+    const a = (ME.ads || []).find(x => x.id === +el.dataset.id);
     if (!a) return;
     hap("i", "light");
-    if (!a.placeholder) api("ad", { id: a.id, kind: "click" }).catch(() => {});
-    if (!LIVE) return toast(a.placeholder ? "Здесь будет реклама, которую ты поставишь командой /ad в боте" : `Откроется ${esc(a.url)}`);
+    if (a.placeholder) return LIVE ? openUrl(a.url) : toast("Здесь будет реклама, которую ты поставишь в админке");
+    api("ad", { id: a.id, kind: "click" }).catch(() => {});
+    openUrl(a.url);
+  }
+  async function claimLuck(btn) {
+    const ev = ME.luck_event;
+    if (!ev) return;
+    if (btn) { btn.disabled = true; btn.textContent = "…"; }
     try {
-      if (/^https:\/\/t\.me\//.test(a.url) && tg.openTelegramLink) tg.openTelegramLink(a.url); else tg.openLink(a.url);
-    } catch (e) { location.href = a.url; }
+      const r = await api("luck/claim");
+      hap("n", "success");
+      toast(`🍀 Удача ×${r.mult} включена на ${r.spins} спинов Обычной и кейса «Телефоны»`, { ms: 4200 });
+      fourLeafFx();
+      await refresh(); if (ui.tab === "play") renderPlay();
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = "Забрать"; }
+      if (e.code === "NOT_SUBSCRIBED") { toast("Сначала подпишись на канал, потом нажми «Забрать»", { action: "Подписаться", onAction: () => openUrl(ev.url), ms: 5000 }); }
+      else fail(e);
+    }
+  }
+  function fourLeafFx() {
+    if (ME.settings.no_effects || reduced) return;
+    const fx = document.createElement("div"); fx.className = "fx"; fx.style.setProperty("--c", "#3dff8f");
+    fx.innerHTML = '<i class="bg" style="background:radial-gradient(circle at 50% 30%, rgba(61,255,143,.35), transparent 65%)"></i>' +
+      Array.from({ length: 26 }, (_, i) => { const a = Math.random() * Math.PI * 2, r = 90 + Math.random() * 200; return `<i class="p leaf" style="--x:${Math.cos(a) * r}px;--y:${Math.sin(a) * r}px;--d:${1400 + Math.random() * 1200}ms;top:22%">🍀</i>`; }).join("");
+    app.append(fx); setTimeout(() => fx.remove(), 3000);
   }
 
   function paintBoard(it, flash) {
@@ -370,18 +507,21 @@
 
   async function doSpin(confirmed = false) {
     if (ui.busy) return;
-    const plan = spinPlan();
-    if (!confirmed && plan.cost && !(ME.starter && plan.lv.key === "common" && ui.count === 5) &&
+    closeDD();
+    const plan = spinPlan(), phones = phonesMode();
+    const starterFree = !phones && ME.starter && plan.lv.key === "common" && ui.count === 5;
+    if (!confirmed && plan.cost && !starterFree &&
       (plan.cost >= CFG.confirm_from_cents || plan.cost > ME.balance_cents * CFG.confirm_balance_share) && plan.cost <= ME.balance_cents) {
       return confirmSpin(plan);
     }
     ui.busy = true;
     const btn = document.getElementById("spinbtn");
-    if (btn) { btn.classList.add("busy"); btn.innerHTML = "КРУТИМ…<small>результат уже решён сервером</small>"; }
+    if (btn) { btn.classList.add("busy"); btn.innerHTML = `${phones ? "ОТКРЫВАЕМ" : "КРУТИМ"}…<small>результат уже решён сервером</small>`; }
     hap("i", "medium");
     let res;
     try {
-      res = await api("spin", { level: ui.level, count: ui.count, confirmed });
+      res = phones ? await api("case/spin", { case: curCase().key, count: ui.count, confirmed })
+        : await api("spin", { level: ui.level, count: ui.count, confirmed });
     } catch (e) {
       ui.busy = false;
       if (ui.tab === "play") renderPlay();
@@ -390,29 +530,36 @@
     }
     const best = res.drops.reduce((a, b) => (b.tier.idx > a.tier.idx || (b.tier.idx === a.tier.idx && b.price_cents > a.price_cents)) ? b : a);
     const board = document.getElementById("board");
-    if (board && !ME.settings.fast) await animateFlaps(board, best);
+    if (board && !ME.settings.fast) await (phones ? animateRoulette(board, best) : animateFlaps(board, best));
     ui.skip = null;
-    ui.boardItem = best;
+    if (phones) ui.boardDevice = best; else ui.boardItem = best;
     if (best.tier.idx >= 5 && !ME.settings.fast && !reduced) await sleep(450); // пауза перед мифическим
     try { await refresh(); } catch (e) { /* баланс обновится позже */ }
     ui.busy = false;
-    if (ui.tab === "play") { renderPlay(); paintBoard(best, true); }
+    if (ui.tab === "play") { renderPlay(); if (!phones) paintBoard(best, true); else flashBoard(best); }
     rarityFx(best);
     await sleep(ME.settings.fast ? 80 : best.tier.idx >= 6 ? 1900 : best.tier.idx >= 4 ? 900 : best.tier.idx >= 2 ? 420 : 160);
-    showSpinResult(res, best);
+    if (phones) showCaseResult(res, best); else showSpinResult(res, best);
     if (res.level_up) setTimeout(() => toast(`🎉 Новый уровень: <b>${res.player_level}</b>. Спинов за монеты в сутки стало больше`), 600);
     if (res.overflow) setTimeout(() => toast(`📦 ${res.overflow} в переполнении — освободи место в коллекции за 48 часов`, { ms: 4500 }), 900);
     if (res.break_hint) setTimeout(() => toast("☕ Уже 50 спинов сегодня. Может, перерыв?", { ms: 5000 }), 2600);
   }
+  function flashBoard(it) {
+    const board = document.getElementById("board");
+    if (!board) return;
+    board.style.setProperty("--tc", `color-mix(in srgb, var(--t${it.tier.idx}) 65%, transparent)`);
+    if (it.tier.idx >= 1) { void board.offsetWidth; board.classList.add("flash"); }
+  }
 
   function confirmSpin(plan) {
-    const lv = plan.lv;
+    const name = plan.kase ? `Кейс «${plan.kase.name}»` : `${plan.lv.name} крутка`;
+    const goal = plan.kase ? ["Легендарный+", plan.kase.odds.filter(o => o.tier >= 4).reduce((a, o) => a + o.p, 0)] : [plan.lv.goal.label, plan.lv.goal.p];
     const sh = openSheet(`<h2>Подтверди покупку</h2>
-      <div class="card"><div class="kv"><span>Крутка</span><b>${esc(lv.name)} ×${ui.count}</b></div>
+      <div class="card"><div class="kv"><span>${plan.kase ? "Кейс" : "Крутка"}</span><b>${esc(name)} ×${ui.count}</b></div>
         <div class="kv"><span>Спишется</span><b class="price">${money(plan.cost)}</b></div>
         <div class="kv"><span>Останется</span><b class="mono">${money(ME.balance_cents - plan.cost)}</b></div>
-        <div class="kv"><span>${esc(lv.goal.label)}</span><b class="mono">${pct(lv.goal.p, 2)} за крутку</b></div></div>
-      <p class="small muted">Шансы одинаковы для всех и видны на экране «Шансы». Отменить крутку после результата нельзя.</p>
+        <div class="kv"><span>${esc(goal[0])}</span><b class="mono">${pct(goal[1], 2)} за раз</b></div></div>
+      <p class="small muted">Шансы одинаковы для всех и видны на экране «Шансы». Отменить после результата нельзя.</p>
       <div class="actions"><button class="btn" data-act="close">Отмена</button><button class="btn primary" id="cgo">Подтвердить</button></div>`);
     sh.querySelector("#cgo").onclick = () => { closeSheet(true); doSpin(true); };
   }
@@ -454,18 +601,136 @@
     sheetEl._items = res.drops;
   }
 
+  // ---------- телефоны: рисунок, табло кейса, рулетка ----------
+  const BRAND = { Apple: "#c9ced8", Samsung: "#2a3a66", Xiaomi: "#2b2f3a", POCO: "#2b2f3a", Google: "#e8e3d8", Nokia: "#1f3a6e", Vertu: "#2a2420",
+    Honor: "#25304a", realme: "#e0b23a", Tecno: "#2a2f48", Infinix: "#202a3d", itel: "#2c3448", OnePlus: "#3a1e1e", Nothing: "#e9e9e9", Huawei: "#2d2a3e" };
+  function phoneSVG(m, tierIdx) {
+    const c = `var(--t${tierIdx})`, body = BRAND[m.brand] || "#25304a", light = /^#(c|e|d)/i.test(body);
+    const ink = light ? "#3a4256" : "#8fa0c8", id = "g" + m.key;
+    const scr = `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#16244a"/><stop offset=".55" stop-color="${tierIdx >= 2 ? "#2b1f5c" : "#14203d"}"/><stop offset="1" stop-color="#0a1121"/></linearGradient></defs>`;
+    let s;
+    if (m.form === "keypad") {
+      const is3310 = m.key === "nokia3310";
+      let keys = "";
+      for (let r = 0; r < 4; r++) for (let k = 0; k < 3; k++) keys += `<rect x="${19 + k * 8}" y="${54 + r * 8.5}" width="6" height="5.5" rx="2" fill="${ink}" opacity=".85"/>`;
+      s = `<rect x="12" y="4" width="36" height="92" rx="${is3310 ? 14 : 9}" fill="${body}" stroke="${c}" stroke-width="2"/>
+        <rect x="17" y="13" width="26" height="24" rx="3" fill="${is3310 ? "#9fbf5a" : `url(#${id})`}"/>
+        ${is3310 ? '<path d="M21 31h8v-6h6v-5h4" stroke="#2e4a14" stroke-width="2.2" fill="none" stroke-linecap="square"/><rect x="38" y="17" width="2.4" height="2.4" fill="#2e4a14"/>' : ""}
+        <rect x="21" y="42" width="18" height="7" rx="3.5" fill="${ink}" opacity=".6"/>${keys}`;
+    } else if (m.form === "flip") {
+      s = `<rect x="12" y="4" width="36" height="45" rx="9" fill="${body}" stroke="${c}" stroke-width="2"/><rect x="16" y="9" width="28" height="36" rx="5" fill="url(#${id})"/>
+        <rect x="12" y="51" width="36" height="45" rx="9" fill="${body}" stroke="${c}" stroke-width="2"/><rect x="16" y="55" width="28" height="36" rx="5" fill="url(#${id})"/>
+        <circle cx="30" cy="13" r="1.4" fill="#0a1121"/>`;
+    } else if (m.form === "fold") {
+      s = `<rect x="3" y="12" width="54" height="76" rx="7" fill="${body}" stroke="${c}" stroke-width="2"/><rect x="7" y="16" width="46" height="68" rx="4" fill="url(#${id})"/>
+        <line x1="30" y1="16" x2="30" y2="84" stroke="rgba(255,255,255,.18)" stroke-width="1.2" stroke-dasharray="3 2"/><circle cx="44" cy="21" r="1.4" fill="#0a1121"/>`;
+    } else {
+      const old = m.year < 2010;
+      s = `<rect x="11" y="4" width="38" height="92" rx="${old ? 7 : 9}" fill="${body}" stroke="${c}" stroke-width="2"/>
+        <rect x="14" y="${old ? 16 : 8}" width="32" height="${old ? 66 : 84}" rx="${old ? 2 : 6}" fill="url(#${id})"/>
+        ${old ? `<circle cx="30" cy="89" r="3.6" fill="none" stroke="${ink}" stroke-width="1.3"/><rect x="25" y="10" width="10" height="1.8" rx=".9" fill="${ink}"/>`
+          : m.brand === "Apple" ? '<rect x="25" y="11" width="10" height="3.4" rx="1.7" fill="#05080f"/>' : '<circle cx="30" cy="12.5" r="1.6" fill="#05080f"/>'}
+        <rect x="18" y="${old ? 24 : 22}" width="9" height="9" rx="2.4" fill="${c}" opacity=".55"/><rect x="31" y="${old ? 24 : 22}" width="9" height="9" rx="2.4" fill="#3dd6ff" opacity=".45"/>
+        <rect x="18" y="${old ? 35 : 35}" width="9" height="9" rx="2.4" fill="#ffc94a" opacity=".45"/><rect x="31" y="35" width="9" height="9" rx="2.4" fill="#3dff8f" opacity=".4"/>`;
+    }
+    return `<svg class="phone-svg" viewBox="0 0 60 100" aria-hidden="true">${scr}${s}</svg>`;
+  }
+  const modelOf = key => CFG.devices.find(d => d.key === key);
+  function caseBoardHTML(d) {
+    const c = curCase();
+    if (d) {
+      return `<div class="meta"><span>📦 ${esc(c.name)}</span><span class="tag" style="--tcol:var(--t${d.tier.idx})">${d.tier.icon} ${esc(d.tier.name)}</span></div>
+        <div class="case-last ${tcls(d.tier)}">${phoneSVG(d, d.tier.idx)}<div><b>${esc(d.brand)} ${esc(d.name)}</b><span class="mono">${money(d.price_cents)}</span><small>${d.year}${d.one_in ? ` · 1 из ${int(d.one_in)}` : ""}</small></div></div>`;
+    }
+    const show = ["nokia3310", "galaxy_s24ultra", "iphone16promax1tb", "pixel9profold", "nokia105"].map(modelOf);
+    return `<div class="meta"><span>📦 Кейс «${esc(c.name)}»</span><span class="tag" style="--tcol:var(--gold)">${money(c.price_cents)}</span></div>
+      <div class="case-art">${show.map((m, i) => `<span style="--i:${i};--y:${[12, 6, 0, 6, 12][i]}px">${phoneSVG(m, m.tier)}</span>`).join("")}</div>
+      <div class="foot">${ME.device_free ? "Первый кейс бесплатно · жми «Открыть»" : "Nokia, iPhone, Galaxy и ещё 47 моделей"}</div>`;
+  }
+  function rouletteStrip(win) {
+    const c = curCase(), pool = [];
+    const weights = c.odds.map(o => ({ t: o.tier, w: Math.max(o.p, 0.004) }));
+    const tw = weights.reduce((a, x) => a + x.w, 0);
+    const pick = () => { let x = Math.random() * tw; for (const o of weights) { x -= o.w; if (x < 0) return o.t; } return 0; };
+    for (let i = 0; i < 40; i++) {
+      const t = pick(), ms = CFG.devices.filter(d => d.tier === t);
+      pool.push(ms[Math.floor(Math.random() * ms.length)]);
+    }
+    pool[33] = modelOf(win.key) || win;
+    return pool;
+  }
+  function animateRoulette(board, win) {
+    const items = rouletteStrip(win);
+    board.className = "board case rolling";
+    board.innerHTML = `<div class="meta"><span>📦 ${esc(curCase().name)}</span><button class="skip" data-act="skip">Пропустить</button></div>
+      <div class="roul"><div class="roul-track">${items.map(m => `<div class="rt t${m.tier}">${phoneSVG(m, m.tier)}<b>${esc(m.brand)}</b><small>${esc(m.name)}</small></div>`).join("")}</div><i class="roul-mark"></i></div>`;
+    const track = board.querySelector(".roul-track"), roul = board.querySelector(".roul");
+    const cell = track.children[0].getBoundingClientRect().width + 6;
+    const target = 33 * cell - (roul.clientWidth / 2 - cell / 2) + (Math.random() - 0.5) * cell * 0.6;
+    return new Promise(resolve => {
+      let done = false, last = -1;
+      const t0 = performance.now(), dur = 4600;
+      const finish = () => { if (done) return; done = true; track.style.transform = `translateX(${-target}px)`; track.children[33].classList.add("win"); resolve(); };
+      ui.skip = finish;
+      const step = now => {
+        if (done) return;
+        const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 4);
+        const x = target * e;
+        track.style.transform = `translateX(${-x}px)`;
+        const idx = Math.floor((x + roul.clientWidth / 2) / cell);
+        if (idx !== last) { last = idx; hap("s"); }
+        if (k < 1) requestAnimationFrame(step); else finish();
+      };
+      requestAnimationFrame(step);
+    });
+  }
+  function devCard(d) {
+    return `<div class="devcard ${tcls(d.tier)}"><div class="dev-glow"></div><div class="dev-img">${phoneSVG(d, d.tier.idx)}</div>
+      <div class="dev-brand">${esc(d.brand)} · ${d.year}</div><div class="dev-name">${esc(d.name)}</div>
+      ${d.note ? `<div class="rule">${esc(d.note)}</div>` : ""}
+      <div class="facts">${d.one_in ? `<span>Шанс <b>1 из ${int(d.one_in)}</b></span>` : ""}<span>Цена <b>${money(d.price_cents)}</b></span></div></div>`;
+  }
+  function devTile(d, opts = {}) {
+    return `<button class="tile dev ${tcls(d.tier)}" data-act="${opts.act || "dev"}" data-id="${d.id}" style="--i:${opts.i || 0}">
+      ${d.is_new && !opts.noNew ? '<span class="new" aria-label="новый"></span>' : ""}
+      <span class="ti"><b class="${d.tier.idx === 7 ? "rainbow" : ""}">${d.tier.icon}</b><span>${d.locked ? "🔒" : ""}</span></span>
+      <span class="dimg">${phoneSVG(d, d.tier.idx)}</span>
+      <span class="dn"><small>${esc(d.brand)}</small>${esc(d.name)}</span>
+      <span class="tp"><span>${money(d.price_cents)}</span></span></button>`;
+  }
+  function showCaseResult(res, best) {
+    const rest = res.drops.filter(d => d !== best).sort((a, b) => b.tier.idx - a.tier.idx || b.price_cents - a.price_cents);
+    const cheap = res.drops.filter(d => d.tier.idx < 2), cheapSum = cheap.reduce((a, d) => a + d.sell_cents, 0);
+    openSheet(`${tierHead(best.tier)}${devCard(best)}
+      ${rest.length ? `<h3>Ещё ${rest.length}</h3><div class="grid3">${rest.map((d, i) => devTile(d, { i: i + 4 })).join("")}</div>` : ""}
+      <div class="actions">
+        ${res.drops.length === 1 ? `<button class="btn" data-act="sell-dev" data-id="${best.id}">Продать <span class="sub">${money(best.sell_cents)}</span></button><button class="btn" data-act="close">На полку</button>`
+          : `${cheap.length ? `<button class="btn wide" data-act="sell-dev-cheap">Продать простые (${cheap.length}) <span class="sub">${money(cheapSum)}</span></button>` : ""}<button class="btn wide" data-act="close">Забрать всё</button>`}
+        <button class="btn primary wide" data-act="again">Открыть ещё${ui.count > 1 ? " ×" + ui.count : ""}</button>
+      </div>`);
+    sheetEl._devs = res.drops;
+  }
+  function catalogSheet() {
+    const c = curCase(), byTier = {};
+    CFG.devices.forEach(d => { (byTier[d.tier] = byTier[d.tier] || []).push(d); });
+    openSheet(`<h2>Каталог · ${CFG.devices.length} моделей</h2><p class="small muted">Цены как в магазинах, у коллекционных — как у коллекционеров. Продать системе можно за 60%.</p>
+      ${Object.keys(byTier).sort((a, b) => b - a).map(t => { const o = c.odds.find(x => x.tier === +t); return `<h3>${tierName(tierOf(+t))} · ${o ? pct(o.p, 3) : "—"}</h3>
+        <div class="list">${byTier[t].map((d, i) => `<div class="li ${tcls(tierOf(+t))}" style="--i:${Math.min(i, 8)}"><span class="ic mini">${phoneSVG(d, +t)}</span><span class="grow"><b>${esc(d.brand)} ${esc(d.name)}</b><span class="small muted">${d.year}${d.note ? " · " + esc(d.note) : ""}</span></span><span class="price">${money(d.price_cents)}</span></div>`).join("")}</div>`; }).join("")}`);
+  }
+
   // ---------- продажа ----------
-  function sellFlow(items, after) {
+  function sellFlow(items, after, kind = "number") {
     const total = items.reduce((a, i) => a + i.sell_cents, 0);
     const top = items.reduce((a, i) => Math.max(a, i.tier.idx), 0);
-    if (items.some(i => i.locked)) return toast("🔒 Номер под замком. Сними замок, чтобы продать");
+    if (items.some(i => i.locked)) return toast(`🔒 ${kind === "device" ? "Телефон" : "Номер"} под замком. Сними замок, чтобы продать`);
     const go = async (confirmed) => {
       try {
-        const r = await api("sell", { ids: items.map(i => i.id), confirmed });
+        const r = await api("sell", { ids: items.map(i => i.id), confirmed, kind });
         hap("n", "success");
         fly("+" + money(r.cents));
         await refresh();
-        ui.boardItem = ui.boardItem && items.some(i => i.id === ui.boardItem.id) ? null : ui.boardItem;
+        if (kind === "device") ui.boardDevice = ui.boardDevice && items.some(i => i.id === ui.boardDevice.id) ? null : ui.boardDevice;
+        else ui.boardItem = ui.boardItem && items.some(i => i.id === ui.boardItem.id) ? null : ui.boardItem;
         toast(`Продано за ${money(r.cents)} · отменить можно 10 минут`, { action: "Отменить", ms: 6000, onAction: () => undoSale(r.sale_id) });
         if (after) after();
       } catch (e) { fail(e); }
@@ -473,12 +738,12 @@
     if (top < 3) return go(false);
     const it = items.find(i => i.tier.idx === top);
     const sh = openSheet(`${tierHead(it.tier)}<h2 style="text-align:center">Продать системе?</h2>
-      <p class="muted" style="text-align:center">${items.length > 1 ? `${items.length} номеров` : esc(it.number)} за <b class="price">${money(total)}</b> (60% цены). Отменить можно в течение 10 минут.</p>
+      <p class="muted" style="text-align:center">${items.length > 1 ? `${items.length} шт.` : esc(it.number || `${it.brand} ${it.name}`)} за <b class="price">${money(total)}</b> (60% цены). Отменить можно в течение 10 минут.</p>
       <div class="actions"><button class="btn" data-act="close">Отмена</button><button class="btn danger" id="sgo">Продать</button></div>`);
     sh.querySelector("#sgo").onclick = () => { closeSheet(true); go(true); };
   }
   async function undoSale(id) {
-    try { const r = await api("sales/undo", { sale_id: id }); hap("n", "success"); toast(`↩️ Вернули ${r.restored} ${r.restored === 1 ? "номер" : "номера"} в коллекцию`); await refresh(); rerender(); }
+    try { const r = await api("sales/undo", { sale_id: id }); hap("n", "success"); toast(`↩️ Вернули ${r.restored} шт. в коллекцию`); await refresh(); rerender(); }
     catch (e) { fail(e); }
   }
   function rerender() { ({ play: renderPlay, collection: loadCollection, market: renderMarket, friends: renderFriends, more: renderMore })[ui.tab](); }
@@ -519,43 +784,70 @@
     </button>`;
   }
   const FILTERS = [[0, "Все"], [2, "◆ Редкий+"], [3, "⬢ Эпик+"], [4, "★ Легенд.+"]];
+  const SELL_TIERS = [[0, "Обычные"], [1, "Необычные"], [2, "Редкие"], [3, "Эпики"], [4, "Легендарные"], [5, "Мифические"], [6, "Секретные"]];
+  function sellRowHTML(counts) {
+    const have = SELL_TIERS.filter(([t]) => counts[t]);
+    if (!have.length) return "";
+    return `<div class="sellrow"><span class="sl">Продать:</span><div class="chips">
+      <button class="chip" data-act="sellby" data-v="all">Все</button>
+      ${have.map(([t, n]) => `<button class="chip ${tcls(tierOf(t))}" data-act="sellby" data-v="${t}"><span class="tcol">${tierOf(t).icon}</span> ${n} · ${counts[t]}</button>`).join("")}</div></div>`;
+  }
   async function renderCollection() {
+    const dev = ui.colKind === "device";
     $main.className = "main";
-    $main.innerHTML = `<div class="row between"><h2>Коллекция</h2><button class="btn sm" data-act="bulk">Продать ниже Редкого</button></div>
-      <div id="cstats"><div class="stats"><div class="skel" style="height:52px"></div><div class="skel" style="height:52px"></div><div class="skel" style="height:52px"></div></div></div>
-      <div id="cbanners" style="margin-top:10px"></div>
-      <div class="chips">${FILTERS.map(([v, t]) => `<button class="chip ${!ui.col.fav && !ui.col.overflow && ui.col.min === v ? "on" : ""}" data-act="cfilter" data-v="${v}">${t}</button>`).join("")}
-        <button class="chip ${ui.col.fav ? "on" : ""}" data-act="cfav">☆ Избранное</button></div>
-      <div class="row" style="margin-top:8px"><input class="search grow" id="csearch" inputmode="numeric" placeholder="Поиск по цифрам, например 777" value="${esc(ui.col.q)}">
-        <button class="btn sm" data-act="csort" style="min-height:42px">${ui.col.sort === "new" ? "Новые" : "Редкие"} ⇅</button></div>
+    $main.innerHTML = `<div class="row between"><h2>Коллекция</h2></div>
+      <div class="seg kind"><button class="${dev ? "" : "on"}" data-act="colkind" data-v="number">📞 Номера</button><button class="${dev ? "on" : ""}" data-act="colkind" data-v="device">📱 Телефоны</button></div>
+      <div id="cstats" style="margin-top:10px"><div class="stats"><div class="skel" style="height:52px"></div><div class="skel" style="height:52px"></div><div class="skel" style="height:52px"></div></div></div>
+      <div id="csell"></div>
+      <div id="cbanners" style="margin-top:8px"></div>
+      ${dev ? `<div class="chips">${FILTERS.map(([v, t]) => `<button class="chip ${ui.dcol.min === v ? "on" : ""}" data-act="dfilter" data-v="${v}">${t}</button>`).join("")}
+          <button class="chip" data-act="dsort">${ui.dcol.sort === "new" ? "Новые" : "Дорогие"} ⇅</button></div>`
+        : `<div class="chips">${FILTERS.map(([v, t]) => `<button class="chip ${!ui.col.fav && !ui.col.overflow && ui.col.min === v ? "on" : ""}" data-act="cfilter" data-v="${v}">${t}</button>`).join("")}
+          <button class="chip ${ui.col.fav ? "on" : ""}" data-act="cfav">☆ Избранное</button></div>
+        <div class="row" style="margin-top:8px"><input class="search grow" id="csearch" inputmode="numeric" placeholder="Поиск по цифрам, например 777" value="${esc(ui.col.q)}">
+          <button class="btn sm" data-act="csort" style="min-height:42px">${ui.col.sort === "new" ? "Новые" : "Редкие"} ⇅</button></div>`}
       <div id="cgrid" style="margin-top:12px"><div class="grid3">${Array.from({ length: 9 }, () => '<div class="skel" style="height:92px"></div>').join("")}</div></div>`;
     enter();
     const input = document.getElementById("csearch");
     let deb;
-    input.oninput = () => { clearTimeout(deb); deb = setTimeout(() => { ui.col.q = input.value; loadCollection(); }, 300); };
+    if (input) input.oninput = () => { clearTimeout(deb); deb = setTimeout(() => { ui.col.q = input.value; loadCollection(); }, 300); };
     await loadCollection();
-    api("seen").catch(() => {});
+    api(dev ? "devices/seen" : "seen").catch(() => {});
   }
   async function loadCollection() {
     const grid = document.getElementById("cgrid");
     if (!grid) return;
+    const dev = ui.colKind === "device";
     try {
-      const c = await api("inventory", { min_tier: ui.col.min, q: ui.col.q, favorites: ui.col.fav, sort: ui.col.sort, overflow: ui.col.overflow });
-      ui.items = c.items;
-      const s = c.slots;
-      document.getElementById("cstats").innerHTML = `<div class="stats">
-        <div><b class="${s.used >= s.total ? "bad" : ""}">${s.used} / ${s.total}</b><span>мест</span></div>
-        <div><b class="price">${money(c.value_cents)}</b><span>стоимость</span></div>
-        <div><b class="ok">+${money(c.week_cents)}</b><span>за неделю</span></div></div>`;
-      let banners = "";
-      if (s.overflow) banners += `<button class="banner" data-act="coverflow" style="width:100%">📦 В переполнении ${s.overflow} из ${s.overflow_max} · через 48 ч продадутся по 60% <span class="grow"></span><b>${ui.col.overflow ? "Скрыть" : "Показать"}</b></button>`;
-      if (ME.last_sale) banners += `<div class="banner info">↩️ Продажа на ${money(ME.last_sale.amount_cents)} <span class="grow"></span><span class="mono" id="undotimer"></span><button class="btn sm" data-act="undo" data-id="${ME.last_sale.id}">Отменить</button></div>`;
-      document.getElementById("cbanners").innerHTML = banners;
+      if (dev) {
+        const c = await api("devices", { min_tier: ui.dcol.min, sort: ui.dcol.sort });
+        ui.devs = c.items;
+        document.getElementById("cstats").innerHTML = `<div class="stats">
+          <div><b>${c.total} / ${c.slots}</b><span>на полке</span></div>
+          <div><b class="price">${money(c.value_cents)}</b><span>стоимость</span></div>
+          <div><b class="mono">${money(Math.floor(c.value_cents * CFG.sell_system_pct / 100))}</b><span>продать всё</span></div></div>`;
+        document.getElementById("csell").innerHTML = sellRowHTML(c.counts);
+        grid.innerHTML = c.items.length ? `<div class="grid3">${c.items.map((d, n) => devTile(d, { i: Math.min(n, 18) })).join("")}</div>`
+          : `<div class="empty"><span class="em">📦</span><b>Полка пуста</b>Открой кейс «Телефоны» на главном экране${ME.device_free ? " — первый бесплатно" : ""}<br><br><button class="btn primary" data-act="go-phones">Открыть кейс</button></div>`;
+      } else {
+        const c = await api("inventory", { min_tier: ui.col.min, q: ui.col.q, favorites: ui.col.fav, sort: ui.col.sort, overflow: ui.col.overflow });
+        ui.items = c.items;
+        const s = c.slots;
+        document.getElementById("cstats").innerHTML = `<div class="stats">
+          <div><b class="${s.used >= s.total ? "bad" : ""}">${s.used} / ${s.total}</b><span>мест</span></div>
+          <div><b class="price">${money(c.value_cents)}</b><span>стоимость</span></div>
+          <div><b class="ok">+${money(c.week_cents)}</b><span>за неделю</span></div></div>`;
+        document.getElementById("csell").innerHTML = sellRowHTML(c.counts);
+        const total = Object.values(c.counts).reduce((a, b) => a + b, 0);
+        grid.innerHTML = c.items.length ? `<div class="grid3">${c.items.map((i, n) => tile(i, { i: Math.min(n, 18) })).join("")}</div>`
+          : total ? `<div class="empty"><span class="em">🔎</span><b>Ничего не нашлось</b>Попробуй другой фильтр или цифры</div>`
+            : `<div class="empty"><span class="em">📱</span><b>Пока пусто</b>Крутни первый спин — номер появится здесь<br><br><button class="btn primary" data-act="tab" data-tab="play">Крутить</button></div>`;
+        let banners = "";
+        if (s.overflow) banners += `<button class="banner" data-act="coverflow" style="width:100%">📦 В переполнении ${s.overflow} из ${s.overflow_max} · через 48 ч продадутся по 60% <span class="grow"></span><b>${ui.col.overflow ? "Скрыть" : "Показать"}</b></button>`;
+        document.getElementById("cbanners").innerHTML = banners;
+      }
+      if (ME.last_sale) document.getElementById("cbanners").insertAdjacentHTML("beforeend", `<div class="banner info">↩️ Продажа на ${money(ME.last_sale.amount_cents)} <span class="grow"></span><span class="mono" id="undotimer"></span><button class="btn sm" data-act="undo" data-id="${ME.last_sale.id}">Отменить</button></div>`);
       undoTick();
-      const total = Object.values(c.counts).reduce((a, b) => a + b, 0);
-      grid.innerHTML = c.items.length ? `<div class="grid3">${c.items.map((i, n) => tile(i, { i: Math.min(n, 18) })).join("")}</div>`
-        : total ? `<div class="empty"><span class="em">🔎</span><b>Ничего не нашлось</b>Попробуй другой фильтр или цифры</div>`
-          : `<div class="empty"><span class="em">📱</span><b>Пока пусто</b>Крутни первый спин — номер появится здесь<br><br><button class="btn primary" data-act="tab" data-tab="play">Крутить</button></div>`;
     } catch (e) { grid.innerHTML = `<div class="empty"><b>Нет связи</b>Попробуй ещё раз<br><br><button class="btn" data-act="tab" data-tab="collection">Повторить</button></div>`; }
   }
   function undoTick() {
@@ -594,29 +886,47 @@
       </div>`);
     sheetEl._items = [it];
   }
-  async function bulkSheet(mode = "below_rare", maxCents = 0) {
-    const sh = openSheet(`<h2>Продать пачкой</h2><p class="small muted">Под замком, от Легендарного и выставленные на рынок не продаются. Отменить можно 10 минут.</p>
-      <div class="seg" style="margin:10px 0"><button class="${mode === "below_rare" ? "on" : ""}" data-act="bulk" data-v="below_rare">Ниже Редкого</button>
-        <button class="${mode === "cheaper" ? "on" : ""}" data-act="bulk" data-v="cheaper" data-max="${maxCents || 400000}">Дешевле ${money(maxCents || 400000)}</button></div>
+  async function bulkSheet(sel = "below_rare", kind = ui.colKind || "number") {
+    const dev = kind === "device";
+    const what = sel === "all" ? (dev ? "все телефоны" : "все номера") : sel === "below_rare" ? "ниже Редкого" : `${SELL_TIERS.find(x => x[0] === +sel)[1].toLowerCase()} ${dev ? "телефоны" : "номера"}`;
+    const sh = openSheet(`<h2>Продать ${esc(what)}</h2><p class="small muted">Системе за 60% цены. Под замком${dev ? "" : " и выставленные на рынок"} не продаются. Отменить можно 10 минут.</p>
       <div id="bulkinfo"><div class="skel" style="height:48px"></div></div>`);
     try {
-      const q = await api("sell/quote", { mode, max_cents: maxCents || 400000 });
+      const q = await api("sell/quote", sel === "all" ? { mode: "all", kind } : sel === "below_rare" ? { mode: "below_rare", kind } : { mode: "tier", tier: +sel, kind });
       if (sheetEl !== sh) return;
       sh.querySelector("#bulkinfo").innerHTML = q.count
-        ? `<button class="btn primary block" id="bgo">Продать ${q.count} ${q.count === 1 ? "номер" : q.count < 5 ? "номера" : "номеров"} · ${money(q.cents)}</button>`
-        : `<div class="card muted">Таких номеров нет.</div>`;
+        ? `<div class="card"><div class="kv"><span>Штук</span><b class="mono">${q.count}</b></div><div class="kv"><span>Получишь</span><b class="price">${money(q.cents)}</b></div>
+            ${q.top_tier >= 3 ? `<div class="kv"><span>Самый редкий</span><b>${tierName(tierOf(q.top_tier))}</b></div>` : ""}</div>
+           <div class="actions"><button class="btn" data-act="close">Отмена</button><button class="btn ${q.top_tier >= 3 ? "danger" : "primary"}" id="bgo">Продать · ${money(q.cents)}</button></div>`
+        : `<div class="card muted">Нечего продавать — всё под замком${dev ? "" : " или на рынке"}.</div>`;
       const b = sh.querySelector("#bgo");
       if (b) b.onclick = async () => {
         b.disabled = true;
         try {
-          const r = await api("sell", { ids: q.ids, confirmed: true });
+          const r = await api("sell", { ids: q.ids, confirmed: true, kind });
           closeSheet(); hap("n", "success"); fly("+" + money(r.cents), b);
           await refresh();
-          toast(`Продано ${r.sold} за ${money(r.cents)}`, { action: "Отменить", ms: 6000, onAction: () => undoSale(r.sale_id) });
-          ui.boardItem = null; rerender();
+          toast(`Продано ${r.sold} шт. за ${money(r.cents)}`, { action: "Отменить", ms: 6000, onAction: () => undoSale(r.sale_id) });
+          if (dev) ui.boardDevice = null; else ui.boardItem = null;
+          rerender();
         } catch (e) { fail(e); b.disabled = false; }
       };
     } catch (e) { fail(e); }
+  }
+  function devSheet(d) {
+    const date = new Date(d.created_at * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+    openSheet(`${tierHead(d.tier)}${devCard(d)}
+      <div class="card" style="margin-top:12px;padding:4px 14px">
+        <div class="kv"><span>Модель</span><b>${esc(d.brand)} ${esc(d.name)}, ${d.year}</b></div>
+        <div class="kv"><span>Выпал</span><b>${date} ${d.source === "free" ? "из бесплатного кейса" : "из кейса"}</b></div>
+        <div class="kv"><span>Цена</span><b class="price">${money(d.price_cents)}</b></div>
+        <div class="kv"><span>Быстрая продажа</span><b class="mono">${money(d.sell_cents)} · 60%</b></div></div>
+      <div class="actions">
+        <button class="btn" data-act="sell-dev" data-id="${d.id}" ${d.locked ? "disabled" : ""}>Продать <span class="sub">${money(d.sell_cents)}</span></button>
+        <button class="btn" data-act="lock-dev" data-id="${d.id}">${d.locked ? "🔓 Снять замок" : "🔒 Замок"}</button>
+        <button class="btn wide" data-act="share-dev" data-id="${d.id}">Показать другу</button>
+      </div>`);
+    sheetEl._devs = [d];
   }
   function listSheet(it) {
     const lo = Math.ceil(it.price_cents * CFG.market.band_pct[0] / 100), hi = Math.floor(it.price_cents * CFG.market.band_pct[1] / 100);
@@ -834,6 +1144,7 @@
         <button class="li" data-act="shop" style="--i:3"><span class="ic">⭐</span><span class="grow"><b>Магазин</b><span class="small muted">попытки, удача, VIP, места</span></span></button>
         <button class="li" data-act="history" style="--i:4"><span class="ic">🧾</span><span class="grow"><b>История</b><span class="small muted">последние 20 операций</span></span></button>
       </div>
+      ${ME.is_admin ? `<h3>Владелец</h3><div class="list"><button class="li" data-act="admin" style="--i:0"><span class="ic">🛠</span><span class="grow"><b>Админка</b><span class="small muted">статистика, игроки и подкрутка, реклама, удача для всех</span></span><span class="muted">›</span></button></div>` : ""}
       <h3>Настройки</h3><div class="card" style="padding:4px 14px">
         <button class="toggle" data-act="country"><span class="grow"><b>Страна и валюта</b><span class="small muted" style="display:block">${c.flag} ${esc(c.name)} · ${esc(c.symbol)}</span></span><span class="muted">›</span></button>
         ${[["fast", "Всегда быстро", "без анимации спина"], ["no_effects", "Без эффектов", "без вспышек и частиц"], ["no_upgrader", "Без улучшения", "скрыть вкладку «Улучшить»"]].map(([k, t, d]) => `<button class="toggle" data-act="setting" data-k="${k}"><span class="grow"><b>${t}</b><span class="small muted" style="display:block">${d}</span></span><span class="sw ${st[k] ? "on" : ""}"></span></button>`).join("")}
@@ -940,15 +1251,19 @@
     } catch (e) { fail(e); }
   }
   function oddsSheet() {
-    const lv = CFG.levels.find(l => l.key === ui.oddsLevel) || CFG.levels[0];
-    const luck = lv.key === "common" && ME.luck;
+    const kase = String(ui.oddsLevel).startsWith("case:") && CFG.device_cases.find(c => "case:" + c.key === ui.oddsLevel);
+    const lv = kase ? { key: ui.oddsLevel, name: `Кейс «${kase.name}»`, price_cents: kase.price_cents, odds: kase.odds,
+      goal: { label: "Легендарный+", p: kase.odds.filter(o => o.tier >= 4).reduce((a, o) => a + o.p, 0) } }
+      : CFG.levels.find(l => l.key === ui.oddsLevel) || CFG.levels[0];
+    const luck = (lv.key === "common" || kase) && ME.luck;
     const lucky = luck ? applyLuck(lv.odds, ME.luck.mult) : null;
     openSheet(`<h2>Шансы</h2>
-      <div class="chips">${CFG.levels.map(l => `<button class="chip ${l.key === lv.key ? "on" : ""}" data-act="oddslevel" data-v="${l.key}">${esc(l.name)}</button>`).join("")}</div>
-      <div class="card" style="margin-top:10px"><div class="row between"><b>${esc(lv.name)} · ${money(lv.price_cents)}</b><span class="tag" style="--tcol:${levelColor(lv.key)}">${esc(lv.goal.label)} ${pct(lv.goal.p, 2)}</span></div></div>
+      <div class="chips">${CFG.levels.map(l => `<button class="chip ${l.key === lv.key ? "on" : ""}" data-act="oddslevel" data-v="${l.key}">${esc(l.name)}</button>`).join("")}${CFG.device_cases.map(c => `<button class="chip ${"case:" + c.key === lv.key ? "on" : ""}" data-act="oddslevel" data-v="case:${c.key}">📱 ${esc(c.name)}</button>`).join("")}</div>
+      <div class="card" style="margin-top:10px"><div class="row between"><b>${esc(lv.name)} · ${money(lv.price_cents)}</b><span class="tag" style="--tcol:${kase ? "var(--gold)" : levelColor(lv.key)}">${esc(lv.goal.label)} ${pct(lv.goal.p, 2)}</span></div></div>
       <table class="odds" style="margin-top:8px"><tr><th>Ступень</th><th>Шанс</th><th>1 из</th>${luck ? `<th>Удача ×${String(ME.luck.mult).replace(".", ",")}</th>` : ""}</tr>
-      ${lv.odds.map(r => `<tr class="${tcls(tierOf(r.tier))}"><td>${tierName(tierOf(r.tier))}</td><td class="mono">${pct(r.p, 2)}</td><td class="mono">${int(1 / r.p)}</td>${luck ? `<td class="mono">${pct(lucky[r.tier], 2)}</td>` : ""}</tr>`).join("")}</table>
-      ${lv.key === "common" ? `<div class="card small" style="margin-top:12px">🛡 Мягкая гарантия: шанс Эпика сейчас <b>${pct(ME.pity.epic_chance)}</b>, гарантирован не позже чем через <b>${ME.pity.epic_in}</b> спинов. С ${CFG.pity.epic_plus.soft}-го спина подряд без Эпика шанс растёт на ${CFG.pity.epic_plus.step_pct} п.п. за спин. Легендарный+ — не позже чем через <b>${ME.pity.legend_in}</b>.</div>`
+      ${lv.odds.map(r => `<tr class="${tcls(tierOf(r.tier))}"><td>${tierName(tierOf(r.tier))}</td><td class="mono">${pct(r.p, r.p < 0.0001 ? 3 : 2)}</td><td class="mono">${int(1 / r.p)}</td>${luck ? `<td class="mono">${pct(lucky[r.tier], lucky[r.tier] < 0.0001 ? 3 : 2)}</td>` : ""}</tr>`).join("")}</table>
+      ${kase ? `<div class="card small" style="margin-top:12px">📱 Сначала выбирается ступень, потом модель этой ступени. Nokia 3310 — самый редкий Мифический: 1 из ${int(1 / (kase.odds.find(o => o.tier === 5).p / 9))}. Без энергии и попыток; удача работает. ${CFG.device_cases[0].free_first ? "Первый кейс бесплатно." : ""}</div>`
+        : lv.key === "common" ? `<div class="card small" style="margin-top:12px">🛡 Мягкая гарантия: шанс Эпика сейчас <b>${pct(ME.pity.epic_chance)}</b>, гарантирован не позже чем через <b>${ME.pity.epic_in}</b> спинов. С ${CFG.pity.epic_plus.soft}-го спина подряд без Эпика шанс растёт на ${CFG.pity.epic_plus.step_pct} п.п. за спин. Легендарный+ — не позже чем через <b>${ME.pity.legend_in}</b>.</div>`
         : `<div class="card small" style="margin-top:12px">Уровни выше Обычной только за монеты, без энергии, попыток, удачи и гарантий. До ${CFG.levels.length && 20} круток в сутки суммарно.</div>`}
       <p class="small muted">Шансы одинаковы для всех и равны серверным. Результат решает сервер до анимации — его можно проверить на экране «Честная игра». «Шанс 1 из N» на карточке всегда по Обычной. Тираж: Легендарный ${CFG.editions["4"]} экземпляра, Мифический ${CFG.editions["5"]}, остальные номера уникальны.</p>
       <p class="small muted">Энергия: 1 бесплатный спин раз в 3 часа, копится до 3. Спинов за монеты на Обычной — до ${ME.coin_spins_left} сегодня.</p>`);
@@ -958,6 +1273,7 @@
     const keys = Object.keys(odds).map(Number), top = [...keys].sort((a, b) => odds[b] - odds[a]).slice(0, 2);
     const out = {}; let boosted = 0;
     keys.filter(k => !top.includes(k)).forEach(k => { out[k] = odds[k] * m; boosted += out[k]; });
+    if (boosted > 0.9) { Object.keys(out).forEach(k => { out[k] *= 0.9 / boosted; }); boosted = 0.9; } // как на сервере: ×10 не ломает шансы
     const cs = top.reduce((a, k) => a + odds[k], 0);
     top.forEach(k => { out[k] = odds[k] * (1 - boosted) / cs; });
     return out;
@@ -977,7 +1293,7 @@
   }
   async function historySheet() {
     const sh = openSheet(`<h2>История</h2><div class="list" id="hl"><div class="skel" style="height:56px"></div></div>`);
-    const names = { start: "Старт", spin_common: "Обычная", spin_rare: "Редкая", spin_epic: "Эпическая", spin_legendary: "Легендарная", spin_elite: "Элитная", spin: "Спин", sell: "Продажа", sell_undo: "Отмена продажи", wheel_daily: "Колесо дня", wheel_weekly: "Колесо недели", gift: "Подарок дня", task: "Задание", task_weekly: "Задание недели", referral: "Друзья", invited: "Приглашение", upgrade: "Улучшение", upgrade_parts: "Запчасти", market_buy: "Покупка на рынке", market_sale: "Продажа на рынке", market_fee: "Комиссия рынка", purchase: "Покупка ⭐", refund: "Возврат", admin: "Бонус", raffle: "Розыгрыш", overflow_sold: "Переполнение", vip_daily: "VIP" };
+    const names = { start: "Старт", spin_common: "Обычная", spin_rare: "Редкая", spin_epic: "Эпическая", spin_legendary: "Легендарная", spin_elite: "Мифическая", spin_secret: "Секретная", case_phones: "Кейс «Телефоны»", sell_device: "Продажа телефонов", spin: "Спин", sell: "Продажа", sell_undo: "Отмена продажи", wheel_daily: "Колесо дня", wheel_weekly: "Колесо недели", gift: "Подарок дня", task: "Задание", task_weekly: "Задание недели", referral: "Друзья", invited: "Приглашение", upgrade: "Улучшение", upgrade_parts: "Запчасти", market_buy: "Покупка на рынке", market_sale: "Продажа на рынке", market_fee: "Комиссия рынка", purchase: "Покупка ⭐", refund: "Возврат", admin: "Бонус", raffle: "Розыгрыш", overflow_sold: "Переполнение", vip_daily: "VIP" };
     try {
       const h = await api("history");
       if (sheetEl !== sh) return;
@@ -1009,9 +1325,9 @@
       const hash = await sha256hex(r.server_seed);
       let acc = 0, tier = null;
       const keys = Object.keys(r.odds).map(Number).sort((a, b) => a - b);
-      if (keys.length && r.action === "spin") { for (const t of keys) { acc += r.odds[t]; if (u < acc) { tier = t; break; } } if (tier === null) tier = keys[keys.length - 1]; }
-      const okHash = hash === r.server_hash, okU = Math.abs(u - r.u0) < 1e-9, okT = r.action !== "spin" || tier === r.tier;
-      out.innerHTML = okHash && okU && okT ? `<span class="ok">✓ Совпало: хеш зерна, u = ${u.toFixed(6)}${r.action === "spin" ? ", " + tierOf(tier).name : ""}</span>` : `<span class="bad">✗ Не совпало</span>`;
+      if (keys.length && (r.action === "spin" || r.action === "case")) { for (const t of keys) { acc += r.odds[t]; if (u < acc) { tier = t; break; } } if (tier === null) tier = keys[keys.length - 1]; }
+      const okHash = hash === r.server_hash, okU = Math.abs(u - r.u0) < 1e-9, okT = (r.action !== "spin" && r.action !== "case") || tier === r.tier;
+      out.innerHTML = okHash && okU && okT ? `<span class="ok">✓ Совпало: хеш зерна, u = ${u.toFixed(6)}${r.action === "spin" || r.action === "case" ? ", " + tierOf(tier).name : ""}</span>` : `<span class="bad">✗ Не совпало</span>`;
       hap("n", okHash && okU && okT ? "success" : "error");
     } catch (e) { out.innerHTML = '<span class="bad">Проверка недоступна в этом браузере</span>'; }
   }
@@ -1075,6 +1391,7 @@
   }
 
   // ---------- действия ----------
+  const findDev = id => [...(sheetEl && sheetEl._devs || []), ...(ui.devs || []), ...(ui.boardDevice ? [ui.boardDevice] : [])].find(d => d.id === id);
   const findItem = id => [...(sheetEl && sheetEl._items || []), ...(ui.items || []), ...(ui.boardItem ? [ui.boardItem] : [])].find(i => i.id === id);
   const actions = {
     tab: el => { closeSheet(true); if (el.dataset.mk) ui.mk.tab = el.dataset.mk; hap("s"); setTab(el.dataset.tab); },
@@ -1085,7 +1402,7 @@
     level: el => { ui.level = el.dataset.v; try { localStorage.setItem("level", ui.level); } catch (e) { /* */ } hap("s"); renderPlay(); },
     count: el => { ui.count = +el.dataset.v; hap("s"); renderPlay(); },
     coins: () => coinsSheet(),
-    odds: () => { ui.oddsLevel = ui.level; oddsSheet(); },
+    odds: () => { ui.oddsLevel = phonesMode() ? "case:" + curCase().key : ui.level; oddsSheet(); },
     oddslevel: el => { ui.oddsLevel = el.dataset.v; oddsSheet(); },
     wheel: el => wheelSheet(el && el.dataset.v),
     gift: () => giftSheet(),
@@ -1123,7 +1440,29 @@
     list: el => { const it = findItem(+el.dataset.id); if (it) listSheet(it); },
     "to-upgrade": el => { ui.up.sel = new Set([+el.dataset.id]); ui.mk.tab = "upgrade"; closeSheet(true); setTab("market"); },
     "to-contract": el => { const it = findItem(+el.dataset.id); ui.contract.tier = it ? it.tier.idx : 0; ui.contract.sel = new Set([+el.dataset.id]); ui.mk.tab = "contract"; closeSheet(true); setTab("market"); },
-    bulk: el => bulkSheet(el && el.dataset.v || "below_rare", el && el.dataset.max ? +el.dataset.max : 0),
+    bulk: () => bulkSheet("below_rare", "number"),
+    sellby: el => bulkSheet(el.dataset.v, ui.colKind),
+    colkind: el => { ui.colKind = el.dataset.v; hap("s"); renderCollection(); },
+    dfilter: el => { ui.dcol.min = +el.dataset.v; renderCollection(); },
+    dsort: () => { ui.dcol.sort = ui.dcol.sort === "new" ? "rare" : "new"; renderCollection(); },
+    "go-phones": () => { ui.mode = "phones"; try { localStorage.setItem("mode", "phones"); } catch (e) { /* */ } setTab("play"); },
+    mode: el => { if (ui.busy) return; ui.mode = el.dataset.v; try { localStorage.setItem("mode", ui.mode); } catch (e) { /* */ } if (ui.mode === "phones" && ME.device_free) ui.count = 1; else if (ui.mode === "numbers" && ME.starter) ui.count = 5; hap("s"); renderPlay(); },
+    "dd-level": el => levelDD(el),
+    "dd-region": el => regionDD(el),
+    "dd-case": el => caseDD(el),
+    catalog: () => catalogSheet(),
+    "luck-open": () => { const ev = ME.luck_event; if (ev && !document.getElementById("adc")?.dataset.swiped) { hap("i", "light"); openUrl(ev.url); } },
+    "luck-claim": el => claimLuck(el),
+    dev: el => { const d = findDev(+el.dataset.id); if (d) devSheet(d); },
+    "sell-dev": el => { const d = findDev(+el.dataset.id); if (d) { closeSheet(true); sellFlow([d], () => rerender(), "device"); } },
+    "sell-dev-cheap": () => { const items = (sheetEl._devs || []).filter(d => d.tier.idx < 2); closeSheet(true); sellFlow(items, () => rerender(), "device"); },
+    "lock-dev": async el => {
+      const d = findDev(+el.dataset.id); if (!d) return;
+      try { const r = await api("lock", { id: d.id, locked: !d.locked, confirm: true, kind: "device" }); d.locked = r.locked; hap("i", "medium"); toast(r.locked ? "🔒 Под замком: не продастся случайно" : "🔓 Замок снят"); devSheet(d); if (ui.tab === "collection") loadCollection(); } catch (e) { fail(e); }
+    },
+    "share-dev": el => { const d = findDev(+el.dataset.id); if (!d) return; const text = `Мне выпал ${d.tier.icon} ${d.brand} ${d.name} за ${money(d.price_cents)}! Открывай кейсы и ты:`;
+      const url = `https://t.me/share/url?url=${encodeURIComponent(ME.ref_link)}&text=${encodeURIComponent(text)}`; if (LIVE && tg.openTelegramLink) tg.openTelegramLink(url); else toast("В Telegram откроется выбор чата"); },
+    admin: () => { try { if (LIVE) sessionStorage.setItem("dz_init", tg.initData); } catch (e) { /* */ } location.href = LIVE ? "/admin" : "admin.html"; },
     cfilter: el => { ui.col.min = +el.dataset.v; ui.col.fav = false; ui.col.overflow = false; renderCollection(); },
     cfav: () => { ui.col.fav = !ui.col.fav; ui.col.overflow = false; renderCollection(); },
     csort: () => { ui.col.sort = ui.col.sort === "new" ? "rare" : "new"; renderCollection(); },
@@ -1149,7 +1488,7 @@
     rboard: el => { ui.rating.board = el.dataset.v; renderRating(); },
     copy: async el => { try { await navigator.clipboard.writeText(el.dataset.v); toast("Ссылка скопирована"); } catch (e) { toast("Не получилось скопировать — зажми ссылку"); } },
     setting: async el => { const k = el.dataset.k; try { ME.settings = await api("settings", { [k]: !ME.settings[k] }); document.body.classList.toggle("noeffects", !!ME.settings.no_effects); hap("s"); renderMore(); } catch (e) { fail(e); } },
-    ad: () => openAd(),
+    ad: el => openAd(el),
     support: () => { const bot = (ME.ref_link.match(/t\.me\/([^/?]+)/) || [])[1]; if (LIVE && bot) tg.openTelegramLink(`https://t.me/${bot}`); else toast("Напиши /paysupport в чате с ботом"); },
     "buy-star": el => buyStar(el.dataset.k),
   };
@@ -1177,7 +1516,7 @@
       CFG = await api("config");
       await refresh();
       if (!CFG.levels.some(l => l.key === ui.level)) ui.level = "common";
-      if (ME.starter) ui.count = 5;
+      if (ME.starter && ui.mode !== "phones") ui.count = 5;
       setTab("play");
       if (!ME.country_confirmed) setTimeout(() => countrySheet(true), 400);
     } catch (e) {

@@ -10,10 +10,10 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from bot.db import Database
-from bot.game import fair, phones
+from bot.game import devices, fair, phones
 from bot.game.odds import pity_chances, with_pity
 from bot.game.settings import DEFAULTS, fmt_money, level, level_from_xp, merge, normalize, validate
-from bot.game.tiers import EPIC, LEGENDARY, RARE, SECRET, TIERS, apply_luck, one_in, tier_dict
+from bot.game.tiers import COMMON, EPIC, LEGENDARY, RARE, SECRET, TIERS, apply_luck, one_in, tier_dict
 
 MSK = timezone(timedelta(hours=3))
 SETTINGS_KEYS = {"fast": False, "no_effects": False, "no_upgrader": False}
@@ -45,6 +45,13 @@ def day_start(ts: float) -> float:
     return datetime.fromtimestamp(ts, MSK).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
+def restrict(odds: dict[int, float], min_tier: int) -> dict[int, float]:
+    """Только ступени не ниже min_tier (если на этом уровне выше нет — самая высокая), пропорционально."""
+    m = min(min_tier, max(odds))
+    s = sum(p for t, p in odds.items() if t >= m)
+    return {t: p / s for t, p in odds.items() if t >= m}
+
+
 class Game:
     def __init__(self, db: Database, stars_enabled: bool = False, clock=time.time):
         self.db = db
@@ -52,15 +59,19 @@ class Game:
         self.stars_enabled = stars_enabled
         self.clock = clock
         self.outbox: list[tuple[int, str]] = []
-        self.ad: dict | None = None
+        self.ads: list[dict] = []
+        self.luck_event: dict | None = None
 
     # ---------- конфиг ----------
 
     async def load_config(self) -> None:
         raw = await self.db.get_setting("game_config")
         self.cfg = normalize(merge(DEFAULTS, json.loads(raw) if raw else {}))
-        ad = await self.db.get_setting("ad")
-        self.ad = json.loads(ad) if ad else None
+        raw = await self.db.get_setting("ads")
+        old = await self.db.get_setting("ad")  # до списка реклама была одна
+        self.ads = json.loads(raw) if raw else ([json.loads(old)] if old else [])
+        ev = await self.db.get_setting("luck_event")
+        self.luck_event = json.loads(ev) if ev else None
 
     async def save_config(self, override: dict) -> list[str]:
         cfg = normalize(merge(DEFAULTS, override))
@@ -107,6 +118,12 @@ class Game:
             "market": c["market"],
             "inventory": c["inventory"],
             "rules": phones.RULES,
+            "device_cases": [{"key": c["key"], "name": c["name"], "price_cents": c["price_cents"],
+                              "free_first": c.get("free_first", False),
+                              "odds": [{"tier": t, "p": p} for t, p in sorted(c["odds"].items())]}
+                             for c in c["device_cases"]],
+            "devices": [devices.model_dict(m) for m in devices.MODELS],
+            "regions": [k for k in c["currency"]["countries"] if k in phones.COUNTRIES],
             "number_masks": {k: phones.format_number(k, "•" * len(c.operators[0]), "•" * phones.TAIL)
                              for k, c in phones.COUNTRIES.items()},
             "stars_enabled": self.stars_enabled,
@@ -240,7 +257,7 @@ class Game:
                      country: str | None = None) -> dict:
         """Собрать номер ступени tier и выдать экземпляр тиража. Номер — из страны игрока."""
         size = int(self.cfg["editions"].get(str(tier), 1))
-        country = country or await self.db.val("SELECT country FROM users WHERE id = ?", uid)
+        country = country or await self.db.val("SELECT COALESCE(region, country) FROM users WHERE id = ?", uid)
         for _ in range(200):
             code, op, sub, rule, hl = phones.generate(tier, rng, country, self.cfg["number_country_weights"],
                                                       self.divine)
@@ -403,7 +420,7 @@ class Game:
         odds = apply_luck(common["odds"], u["luck_mult"]) if u["luck_left"] > 0 else common["odds"]
         qa, qb = pity_chances(odds, self.cfg["pity"], u["pity_epic"], u["pity_legend"])
         last = await self.db.one("SELECT i.* FROM drops d JOIN items i ON i.id = d.item_id WHERE d.user_id = ? "
-                                 "AND d.action = 'spin' ORDER BY d.id DESC LIMIT 1", uid)
+                                 "AND d.action = 'spin' AND d.kind = 'number' ORDER BY d.id DESC LIMIT 1", uid)
         sale = await self.db.one("SELECT * FROM sales WHERE user_id = ? AND undone = 0 AND undo_until > ? "
                                  "ORDER BY id DESC LIMIT 1", uid, now)
         cur = self.country_of(u)
@@ -415,6 +432,9 @@ class Game:
                      "vip_until": u["vip_until"] if self._vip(u) else None, "created_at": u["created_at"],
                      "showcase": json.loads(u["showcase"])},
             "country": u["country"], "country_confirmed": bool(u["country_confirmed"]),
+            "region": u["region"] or u["country"],
+            "luck_event": await self._luck_event_view(uid),
+            "device_free": await self._device_free_left(uid),
             "country_change_after": change_after if change_after and change_after > now else None,
             "currency": {"country": u["country"], **cur, "game_label": self.cfg["currency"]["show_game_label"]},
             "balance_cents": u["balance_cents"], "attempts": u["attempts"],
@@ -527,6 +547,7 @@ class Game:
             pair = await self._seed_pair(uid)
             luck_mult, luck_left = u["luck_mult"], u["luck_left"]
             pe, pl = u["pity_epic"], u["pity_legend"]
+            boost = u["boost_min_tier"]  # подкрутка админа: первый дроп этой крутки не ниже ступени
             drops, got_min = [], False
             for i in range(count):
                 odds = dict(lv["odds"])
@@ -541,6 +562,8 @@ class Game:
                     m = self.cfg["starter"]["min_tier"]
                     s = sum(p for t, p in odds.items() if t >= m)
                     odds = {t: p / s for t, p in odds.items() if t >= m}
+                if boost is not None and i == 0:
+                    odds = restrict(odds, boost)
                 nonce = await self._next_nonce(pair)
                 u0 = fair.roll(pair["server_seed"], pair["client_seed"], nonce, 0)
                 tier = fair.pick_tier(u0, odds)
@@ -566,7 +589,7 @@ class Game:
                 "UPDATE users SET balance_cents = balance_cents - ?, attempts = attempts - ?, energy = ?, energy_ts = ?, "
                 "energy_notify = CASE WHEN ? = 0 AND ? > 0 THEN 1 ELSE energy_notify END, pity_epic = ?, "
                 "pity_legend = ?, luck_left = ?, xp = xp + ?, total_spins = ?, last_seen = ?, "
-                "starter_used = CASE WHEN ? THEN 1 ELSE starter_used END WHERE id = ?",
+                "starter_used = CASE WHEN ? THEN 1 ELSE starter_used END, boost_min_tier = NULL WHERE id = ?",
                 cost, use_a, e - use_e, ets, e - use_e, use_e, pe, pl, luck_left, xp_gain, total, now, starter, uid)
             await self._ledger(uid, "rub", -cost, f"spin_{lv['key']}")
             await self._ledger(uid, "attempts", -use_a, "spin")
@@ -632,15 +655,16 @@ class Game:
             await self.db.run("UPDATE items SET favorite = ? WHERE id = ?", 1 - row[0], item_id)
             return not row[0]
 
-    async def set_lock(self, uid: int, item_id: int, locked: bool, confirm: bool = False) -> bool:
+    async def set_lock(self, uid: int, item_id: int, locked: bool, confirm: bool = False, kind: str = "number") -> bool:
+        table = "devices" if kind == "device" else "items"
         async with self.db.tx():
-            row = await self.db.one("SELECT locked FROM items WHERE id = ? AND user_id = ? AND state != 'gone'",
+            row = await self.db.one(f"SELECT locked FROM {table} WHERE id = ? AND user_id = ? AND state != 'gone'",
                                     item_id, uid)
             if not row:
-                raise GameError("Номер не найден", "CONFLICT")
+                raise GameError("Не найдено", "CONFLICT")
             if not locked and row[0] and not confirm:
-                raise GameError("Снять замок? Номер снова можно будет продать", "CONFIRM_REQUIRED")
-            await self.db.run("UPDATE items SET locked = ? WHERE id = ?", int(locked), item_id)
+                raise GameError("Снять замок? Его снова можно будет продать", "CONFIRM_REQUIRED")
+            await self.db.run(f"UPDATE {table} SET locked = ? WHERE id = ?", int(locked), item_id)
             if locked:
                 await self._task_event(uid, "lock")
             return locked
@@ -653,30 +677,48 @@ class Game:
             await self.db.run("UPDATE users SET showcase = ? WHERE id = ?", json.dumps(ids), uid)
         return ids
 
-    async def sell(self, uid: int, ids: list[int], confirmed: bool = False) -> dict:
+    async def _sell_rows(self, uid: int, ids: list[int], kind: str) -> list[dict]:
+        if kind != "device":
+            return await self._owned(uid, ids, ("free", "overflow"))
+        ids = list(dict.fromkeys(int(i) for i in ids))
+        if not ids:
+            raise GameError("Ничего не выбрано")
+        marks = ",".join("?" * len(ids))
+        rows = await self.db.all(f"SELECT * FROM devices WHERE user_id = ? AND state = 'free' AND id IN ({marks})",
+                                 uid, *ids)
+        if len(rows) != len(ids):
+            raise GameError("Часть телефонов уже недоступна. Обнови коллекцию", "CONFLICT")
+        return [dict(r) for r in rows]
+
+    def _sell_price(self, row: dict, kind: str) -> int:
+        price = row["price_cents"] if kind == "device" else self.cfg["ladder_cents"][row["tier"]]
+        return price * self.cfg["sell_system_pct"] // 100
+
+    async def sell(self, uid: int, ids: list[int], confirmed: bool = False, kind: str = "number") -> dict:
+        """Продажа системе за 60%. От Эпика — только с подтверждением. Отменить можно 10 минут."""
+        kind = "device" if kind == "device" else "number"
+        table = "devices" if kind == "device" else "items"
         async with self.db.tx():
             u = await self._user(uid)
-            items = await self._owned(uid, ids, ("free", "overflow"))
+            items = await self._sell_rows(uid, ids, kind)
             if any(i["locked"] for i in items):
-                raise GameError("Номер под замком. Сними замок, чтобы продать", "ITEM_LOCKED")
+                raise GameError("Под замком не продаётся. Сними замок, чтобы продать", "ITEM_LOCKED")
             top = max(i["tier"] for i in items)
-            if top >= LEGENDARY and len(items) > 1:
-                raise GameError("Легендарные и выше продаются только по одному")
             if top >= EPIC and not confirmed:
                 raise GameError("Подтверди продажу", "CONFIRM_REQUIRED")
-            pct = self.cfg["sell_system_pct"]
-            total = sum(self.cfg["ladder_cents"][i["tier"]] * pct // 100 for i in items)
+            total = sum(self._sell_price(i, kind) for i in items)
             marks = ",".join("?" * len(items))
-            await self.db.run(f"UPDATE items SET state = 'gone', gone_reason = 'sold' WHERE id IN ({marks})",
+            await self.db.run(f"UPDATE {table} SET state = 'gone', gone_reason = 'sold' WHERE id IN ({marks})",
                               *[i["id"] for i in items])
             now = self.clock()
             undo_until = now + self.cfg["undo_sell"]["minutes"] * 60
-            cur = await self.db.run("INSERT INTO sales (user_id, item_ids, amount_cents, created_at, undo_until) "
-                                    "VALUES (?, ?, ?, ?, ?)", uid, json.dumps([i["id"] for i in items]), total, now,
-                                    undo_until)
-            await self._add(uid, cents=total, reason="sell")
+            cur = await self.db.run("INSERT INTO sales (user_id, item_ids, amount_cents, created_at, undo_until, kind) "
+                                    "VALUES (?, ?, ?, ?, ?, ?)", uid, json.dumps([i["id"] for i in items]), total, now,
+                                    undo_until, kind)
+            await self._add(uid, cents=total, reason="sell" if kind == "number" else "sell_device")
             await self._task_event(uid, "sell", len(items))
-            await self._promote_overflow(u)
+            if kind == "number":
+                await self._promote_overflow(u)
             return {"sale_id": cur.lastrowid, "cents": total, "sold": len(items), "undo_until": undo_until}
 
     async def undo_sale(self, uid: int, sale_id: int) -> dict:
@@ -691,31 +733,47 @@ class Game:
                 raise GameError("Отменять продажу можно 5 раз в сутки", "DAILY_LIMIT")
             if u["balance_cents"] < sale["amount_cents"]:
                 raise GameError(f"Не хватает {self.money(sale['amount_cents'] - u['balance_cents'], u)}, "
-                                "чтобы вернуть номера", "NOT_ENOUGH_COINS")
+                                "чтобы вернуть проданное", "NOT_ENOUGH_COINS")
             ids = json.loads(sale["item_ids"])
-            places = await self._place(u, len(ids))
-            for item_id, place in zip(ids, places):
-                await self.db.run("UPDATE items SET state = ?, gone_reason = NULL, overflow_until = ? WHERE id = ? "
-                                  "AND user_id = ? AND gone_reason = 'sold'", place,
-                                  self.clock() + self.cfg["inventory"]["overflow_hours"] * 3600
-                                  if place == "overflow" else None, item_id, uid)
+            if sale["kind"] == "device":
+                marks = ",".join("?" * len(ids))
+                await self.db.run(f"UPDATE devices SET state = 'free', gone_reason = NULL WHERE user_id = ? "
+                                  f"AND gone_reason = 'sold' AND id IN ({marks})", uid, *ids)
+            else:
+                places = await self._place(u, len(ids))
+                for item_id, place in zip(ids, places):
+                    await self.db.run("UPDATE items SET state = ?, gone_reason = NULL, overflow_until = ? WHERE id = ? "
+                                      "AND user_id = ? AND gone_reason = 'sold'", place,
+                                      self.clock() + self.cfg["inventory"]["overflow_hours"] * 3600
+                                      if place == "overflow" else None, item_id, uid)
             await self.db.run("UPDATE sales SET undone = 1 WHERE id = ?", sale_id)
             await self._add(uid, cents=-sale["amount_cents"], reason="sell_undo")
             await self._counter(uid, "undo", 1)
-            return {"restored": len(ids)}
+            return {"restored": len(ids), "kind": sale["kind"]}
 
-    async def sell_quote(self, uid: int, mode: str = "below_rare", max_cents: int = 0) -> dict:
-        """«Продать всё ниже Редкого» и «Продать дешевле X»: замок, Легендарные+ и лоты не попадают."""
-        rows = await self.db.all("SELECT id, tier FROM items WHERE user_id = ? AND state IN ('free', 'overflow') "
-                                 "AND locked = 0 AND tier < ?", uid, LEGENDARY)
-        lad = self.cfg["ladder_cents"]
+    async def sell_quote(self, uid: int, mode: str = "below_rare", max_cents: int = 0, tier: int | None = None,
+                         kind: str = "number") -> dict:
+        """Продажа пачкой. Режимы: below_rare, cheaper (дешевле max_cents), tier (одна ступень), all.
+        Под замком и выставленное на рынок не попадает."""
+        if kind == "device":
+            rows = [dict(r) for r in await self.db.all(
+                "SELECT id, tier, price_cents FROM devices WHERE user_id = ? AND state = 'free' AND locked = 0", uid)]
+        else:
+            rows = [dict(r) for r in await self.db.all(
+                "SELECT id, tier FROM items WHERE user_id = ? AND state IN ('free', 'overflow') AND locked = 0", uid)]
+        price = (lambda r: r["price_cents"]) if kind == "device" else (lambda r: self.cfg["ladder_cents"][r["tier"]])
         if mode == "below_rare":
             rows = [r for r in rows if r["tier"] < RARE]
-        else:
-            rows = [r for r in rows if lad[r["tier"]] < int(max_cents)]
+        elif mode == "cheaper":
+            rows = [r for r in rows if price(r) < int(max_cents)]
+        elif mode == "tier":
+            rows = [r for r in rows if tier is not None and r["tier"] == int(tier)]
+        elif mode != "all":
+            raise GameError("Нет такого режима продажи")
         pct = self.cfg["sell_system_pct"]
         return {"ids": [r["id"] for r in rows], "count": len(rows),
-                "cents": sum(lad[r["tier"]] * pct // 100 for r in rows)}
+                "cents": sum(price(r) * pct // 100 for r in rows),
+                "top_tier": max((r["tier"] for r in rows), default=None)}
 
     # ---------- 5 в 1 и апгрейдер ----------
 
@@ -1118,8 +1176,9 @@ class Game:
         async with self.db.tx():
             pair = await self._seed_pair(uid)
         rows = await self.db.all(
-            "SELECT d.*, s.server_seed, s.revealed_at, i.country, i.op, i.sub FROM drops d "
-            "LEFT JOIN seeds s ON s.id = d.seed_id LEFT JOIN items i ON i.id = d.item_id "
+            "SELECT d.*, s.server_seed, s.revealed_at, i.country, i.op, i.sub, v.model FROM drops d "
+            "LEFT JOIN seeds s ON s.id = d.seed_id LEFT JOIN items i ON i.id = d.item_id AND d.kind = 'number' "
+            "LEFT JOIN devices v ON v.id = d.item_id AND d.kind = 'device' "
             "WHERE d.user_id = ? AND d.server_hash IS NOT NULL ORDER BY d.id DESC LIMIT 50", uid)
         out = []
         for r in rows:
@@ -1127,7 +1186,9 @@ class Game:
                 "id": r["id"], "action": r["action"], "level": r["level"], "tier": r["tier"], "u0": r["u0"],
                 "odds": json.loads(r["odds_json"]), "server_hash": r["server_hash"], "client_seed": r["client_seed"],
                 "nonce": r["nonce"], "server_seed": r["server_seed"] if r["revealed_at"] else None,
-                "number": phones.format_number(r["country"], r["op"], r["sub"]) if r["country"] else None,
+                "number": phones.format_number(r["country"], r["op"], r["sub"]) if r["country"] else
+                (f"{devices.BY_KEY[r['model']].brand} {devices.BY_KEY[r['model']].name}" if r["model"] in devices.BY_KEY
+                 else None),
                 "created_at": r["created_at"],
             })
         return {"server_hash": pair["server_hash"], "client_seed": pair["client_seed"], "nonce": pair["nonce"],
@@ -1213,7 +1274,7 @@ class Game:
         circle = await self._circle(uid)
         rows = await self.db.all(
             "SELECT d.id, d.user_id, d.created_at, u.first_name, i.* FROM drops d JOIN users u ON u.id = d.user_id "
-            "JOIN items i ON i.id = d.item_id WHERE d.tier >= ? ORDER BY d.id DESC LIMIT 20", EPIC)
+            "JOIN items i ON i.id = d.item_id WHERE d.tier >= ? AND d.kind = 'number' ORDER BY d.id DESC LIMIT 20", EPIC)
         views = await self._views(rows)
         return [{"name": r["first_name"] or "Игрок", "friend": r["user_id"] in circle and r["user_id"] != uid,
                  "me": r["user_id"] == uid, "number": v["number"], "flag": v["flag"], "tier": v["tier"],
@@ -1316,9 +1377,124 @@ class Game:
             await self.db.run("UPDATE payments SET refunded = 1 WHERE id = ?", pay["id"])
             return {"user_id": pay["user_id"], "stars": pay["stars"]}
 
-    # ---------- реклама на главном экране ----------
+    # ---------- регион номеров ----------
 
-    async def set_ad(self, title: str, text: str, url: str, button: str = "", icon: str = "") -> dict:
+    async def set_region(self, uid: int, code: str) -> dict:
+        """Страна, из которой выпадают номера. Меняется в любой момент, валюта от неё не зависит."""
+        if code not in self.cfg["currency"]["countries"] or code not in phones.COUNTRIES:
+            raise GameError("Такой страны нет в списке")
+        async with self.db.tx():
+            await self._user(uid)
+            await self.db.run("UPDATE users SET region = ? WHERE id = ?", code, uid)
+        return {"region": code}
+
+    # ---------- кейс «Телефоны» ----------
+
+    def _device_case(self, key: str) -> dict:
+        case = next((c for c in self.cfg["device_cases"] if c["key"] == key), None)
+        if not case:
+            raise GameError("Нет такого кейса")
+        return case
+
+    async def _device_free_left(self, uid: int) -> int:
+        """Первый кейс каждого вида бесплатно — чтобы новичок увидел, как он открывается."""
+        used = await self._counter(uid, "device_free", day="all")
+        return 0 if used else int(any(c.get("free_first") for c in self.cfg["device_cases"]))
+
+    def _device_view(self, r) -> dict:
+        m = devices.BY_KEY[r["model"]]
+        case_odds = self.cfg["device_cases"][0]["odds"]
+        same = [x for x in devices.MODELS if x.tier == m.tier]
+        p = case_odds.get(m.tier, 0) * m.weight / sum(x.weight for x in same)
+        return {"id": r["id"], "kind": "device", "user_id": r["user_id"], **devices.model_dict(m),
+                "tier": tier_dict(r["tier"]), "price_cents": r["price_cents"],
+                "sell_cents": r["price_cents"] * self.cfg["sell_system_pct"] // 100,
+                "one_in": one_in(p), "locked": bool(r["locked"]), "is_new": bool(r["is_new"]),
+                "state": r["state"], "source": r["source"], "created_at": r["created_at"]}
+
+    async def device_spin(self, uid: int, case_key: str = "phones", count: int = 1, confirmed: bool = False) -> dict:
+        case = self._device_case(case_key)
+        if count not in self.cfg["counts"]:
+            raise GameError("Можно открыть ×1, ×3, ×5 или ×10")
+        async with self.db.tx():
+            u = await self._user(uid)
+            now = self.clock()
+            have = await self.db.val("SELECT COUNT(*) FROM devices WHERE user_id = ? AND state = 'free'", uid)
+            if have + count > self.cfg["inventory"]["slots"]:
+                raise GameError("Полка телефонов заполнена: продай лишние", "INVENTORY_FULL")
+            free = count == 1 and case.get("free_first") and await self._device_free_left(uid)
+            cost = 0 if free else count * case["price_cents"]
+            if cost > u["balance_cents"]:
+                need = cost - u["balance_cents"]
+                raise GameError(f"Не хватает {self.money(need, u)}. Продай номера или выполни задания",
+                                "NOT_ENOUGH_COINS", need_cents=need)
+            if cost and not confirmed and (cost >= self.cfg["confirm_from_cents"]
+                                           or cost > u["balance_cents"] * self.cfg["confirm_balance_share"]):
+                raise GameError(f"Подтверди покупку: {self.money(cost, u)}", "CONFIRM_REQUIRED", cost_cents=cost)
+            pair = await self._seed_pair(uid)
+            luck_left, boost = u["luck_left"], u["boost_min_tier"]
+            drops = []
+            for i in range(count):
+                odds, luck = dict(case["odds"]), 1.0
+                if luck_left > 0:
+                    luck = u["luck_mult"]
+                    odds = apply_luck(odds, luck)
+                    luck_left -= 1
+                if boost is not None and i == 0:
+                    odds = restrict(odds, boost)
+                nonce = await self._next_nonce(pair)
+                u0 = fair.roll(pair["server_seed"], pair["client_seed"], nonce, 0)
+                tier = fair.pick_tier(u0, odds)
+                model = devices.pick_model(tier, fair.FairRandom(pair["server_seed"], pair["client_seed"], nonce))
+                cur = await self.db.run(
+                    "INSERT INTO devices (user_id, model, tier, price_cents, source, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    uid, model.key, tier, model.price_rub * 100, "free" if free else "case", now)
+                await self.db.run(
+                    "INSERT INTO drops (user_id, item_id, kind, action, level, tier, odds_json, u0, seed_id, server_hash, "
+                    "client_seed, nonce, luck, odds_version, created_at) "
+                    "VALUES (?, ?, 'device', 'case', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    uid, cur.lastrowid, case["key"], tier, json.dumps({str(k): v for k, v in sorted(odds.items())}),
+                    u0, pair["id"], pair["server_hash"], pair["client_seed"], nonce, luck, self.cfg["odds_version"], now)
+                row = await self.db.one("SELECT * FROM devices WHERE id = ?", cur.lastrowid)
+                view = self._device_view(row)
+                view["fair"] = {"server_hash": pair["server_hash"], "client_seed": pair["client_seed"], "nonce": nonce}
+                drops.append(view)
+            xp_gain = count * max(10, case["price_cents"] // 10_000)
+            await self.db.run("UPDATE users SET balance_cents = balance_cents - ?, luck_left = ?, xp = xp + ?, "
+                              "total_spins = total_spins + ?, boost_min_tier = NULL, last_seen = ? WHERE id = ?",
+                              cost, luck_left, xp_gain, count, now, uid)
+            await self._ledger(uid, "rub", -cost, f"case_{case['key']}")
+            if free:
+                await self._counter(uid, "device_free", 1, day="all")
+            await self._counter(uid, "spins", count)
+            await self._task_event(uid, "spin", count)
+            return {"drops": drops, "case": case["key"], "paid": {"cents": cost, "free": bool(free)},
+                    "level_up": level_from_xp(u["xp"] + xp_gain)[0] > level_from_xp(u["xp"])[0],
+                    "player_level": level_from_xp(u["xp"] + xp_gain)[0]}
+
+    async def device_collection(self, uid: int, min_tier: int = 0, sort: str = "rare") -> dict:
+        order = "id DESC" if sort == "new" else "tier DESC, price_cents DESC, id DESC"
+        rows = await self.db.all(f"SELECT * FROM devices WHERE user_id = ? AND state = 'free' AND tier >= ? "
+                                 f"ORDER BY {order}", uid, min_tier)
+        counts = await self.db.all("SELECT tier, COUNT(*) AS n, SUM(price_cents) AS v FROM devices WHERE user_id = ? "
+                                   "AND state = 'free' GROUP BY tier", uid)
+        return {"items": [self._device_view(r) for r in rows], "counts": {r["tier"]: r["n"] for r in counts},
+                "value_cents": sum(r["v"] for r in counts), "total": sum(r["n"] for r in counts),
+                "slots": self.cfg["inventory"]["slots"]}
+
+    async def mark_devices_seen(self, uid: int) -> None:
+        async with self.db.tx():
+            await self.db.run("UPDATE devices SET is_new = 0 WHERE user_id = ? AND is_new = 1", uid)
+
+    # ---------- реклама на главном экране (до 3 баннеров по очереди) ----------
+
+    async def _save_ads(self) -> None:
+        await self.db.set_setting("ads", json.dumps(self.ads, ensure_ascii=False))
+        await self.db.set_setting("ad", None)
+
+    async def set_ad(self, title: str, text: str, url: str, button: str = "", icon: str = "",
+                     ad_id: int | None = None) -> dict:
+        """Добавить рекламу (или изменить по ad_id). Одновременно не больше ads_max баннеров."""
         title, text, url = title.strip(), text.strip(), url.strip()
         button, icon = (button.strip() or "Открыть"), (icon.strip() or "📣")
         if not 1 <= len(title) <= 40:
@@ -1329,33 +1505,229 @@ class Game:
             raise GameError("Ссылка должна начинаться с https://")
         if len(button) > 16 or len(icon) > 4:
             raise GameError("Кнопка не длиннее 16 символов, значок — один эмодзи")
-        ad = {"id": int(self.clock()), "title": title, "text": text, "url": url, "button": button, "icon": icon}
-        await self.db.set_setting("ad", json.dumps(ad, ensure_ascii=False))
-        self.ad = ad
+        if ad_id is not None:
+            old = next((a for a in self.ads if a["id"] == int(ad_id)), None)
+            if not old:
+                raise GameError("Такой рекламы нет", "CONFLICT")
+            old.update(title=title, text=text, url=url, button=button, icon=icon)
+            await self._save_ads()
+            return old
+        if len(self.ads) >= self.cfg["ads_max"]:
+            raise GameError(f"Уже {self.cfg['ads_max']} рекламы. Сними одну, чтобы поставить новую")
+        new_id = max([int(self.clock())] + [a["id"] + 1 for a in self.ads])
+        ad = {"id": new_id, "title": title, "text": text, "url": url, "button": button, "icon": icon,
+              "created_at": self.clock()}
+        self.ads.append(ad)
+        await self._save_ads()
         return ad
 
+    @property
+    def ad(self) -> dict | None:
+        return self.ads[0] if self.ads else None
+
+    async def remove_ad(self, ad_id: int | None = None) -> None:
+        self.ads = [] if ad_id is None else [a for a in self.ads if a["id"] != int(ad_id)]
+        await self._save_ads()
+
     async def clear_ad(self) -> None:
-        await self.db.set_setting("ad", "")
-        self.ad = None
+        await self.remove_ad()
 
     async def ad_event(self, uid: int, ad_id: int, kind: str) -> None:
         """Показ или переход по рекламе: счётчик на игрока и день, для статистики рекламодателю."""
-        if kind not in ("view", "click") or not self.ad or self.ad["id"] != int(ad_id):
+        if kind not in ("view", "click") or not any(a["id"] == int(ad_id) for a in self.ads):
             return
         async with self.db.tx():
             await self._counter(uid, f"ad_{kind}:{ad_id}", 1)
 
-    async def ad_stats(self) -> dict | None:
-        if not self.ad:
-            return None
+    async def _ad_numbers(self, ad_id: int) -> dict:
         today = day_key(self.clock())
-        out = {"ad": self.ad}
+        out = {}
         for kind in ("view", "click"):
-            key = f"ad_{kind}:{self.ad['id']}"
+            key = f"ad_{kind}:{ad_id}"
             row = await self.db.one("SELECT SUM(value), COUNT(DISTINCT user_id) FROM counters WHERE key = ?", key)
             day = await self.db.one("SELECT SUM(value), COUNT(DISTINCT user_id) FROM counters WHERE key = ? "
                                     "AND day = ?", key, today)
             out[kind] = {"total": row[0] or 0, "users": row[1], "today": day[0] or 0, "users_today": day[1]}
+        return out
+
+    async def ads_stats(self) -> list[dict]:
+        return [{"ad": a, **await self._ad_numbers(a["id"])} for a in self.ads]
+
+    async def ad_stats(self) -> dict | None:
+        """Статистика первой рекламы (совместимость с /ad до списка)."""
+        return (await self.ads_stats() or [None])[0]
+
+    # ---------- «Удача для всех» за подписку ----------
+
+    @staticmethod
+    def channel_ref(channel: str) -> tuple[str, str]:
+        """«@name», «t.me/name» или «-100…» → (chat_id для проверки подписки, ссылка для игрока)."""
+        ch = channel.strip()
+        m = re.match(r"^(?:https?://)?t\.me/([A-Za-z0-9_]{4,32})/?$", ch) or re.match(r"^@?([A-Za-z0-9_]{4,32})$", ch)
+        if m:
+            return "@" + m.group(1), "https://t.me/" + m.group(1)
+        if re.match(r"^-100\d{5,}$", ch):
+            return ch, ""
+        raise GameError("Канал: @username или ссылка t.me/username")
+
+    async def start_luck_event(self, mult: float, spins: int, hours: float, channel: str, title: str = "",
+                               url: str = "") -> dict:
+        le = self.cfg["luck_event"]
+        mult = float(mult)
+        if mult not in [float(x) for x in le["mults"]]:
+            raise GameError("Множитель: " + ", ".join(f"×{x}" for x in le["mults"]))
+        spins, hours = int(spins), float(hours)
+        if not 1 <= spins <= le["max_spins"]:
+            raise GameError(f"Спинов с удачей от 1 до {le['max_spins']}")
+        if not 0 < hours <= 24 * 30:
+            raise GameError("Длительность от 1 часа до 30 дней")
+        chat_id, link = self.channel_ref(channel)
+        url = (url or link).strip()
+        if not url.startswith("https://"):
+            raise GameError("Нужна ссылка на канал https://t.me/…")
+        now = self.clock()
+        ev = {"id": int(now), "mult": mult, "spins": spins, "until": now + hours * 3600, "chat_id": chat_id,
+              "url": url, "title": (title.strip() or f"Удача ×{mult:g} для всех")[:40], "started_at": now}
+        self.luck_event = ev
+        await self.db.set_setting("luck_event", json.dumps(ev, ensure_ascii=False))
+        return ev
+
+    async def stop_luck_event(self) -> None:
+        self.luck_event = None
+        await self.db.set_setting("luck_event", None)
+
+    def _luck_active(self) -> dict | None:
+        ev = self.luck_event
+        return ev if ev and ev["until"] > self.clock() else None
+
+    async def _luck_event_view(self, uid: int) -> dict | None:
+        ev = self._luck_active()
+        if not ev:
+            return None
+        claimed = bool(await self._counter(uid, f"luck_claim:{ev['id']}", day="event"))
+        return {"id": ev["id"], "mult": ev["mult"], "spins": ev["spins"], "until": ev["until"], "url": ev["url"],
+                "title": ev["title"], "claimed": claimed}
+
+    async def claim_luck(self, uid: int) -> dict:
+        """Вызывается после проверки подписки (bot/web.py): даёт удачу события на N спинов."""
+        ev = self._luck_active()
+        if not ev:
+            raise GameError("Акция удачи закончилась", "NOT_ALLOWED_YET")
+        async with self.db.tx():
+            u = await self._user(uid)
+            key = f"luck_claim:{ev['id']}"
+            if await self._counter(uid, key, day="event"):
+                raise GameError("Удачу этой акции ты уже получил", "CONFLICT")
+            if u["luck_left"] > 0 and u["luck_mult"] > ev["mult"]:
+                raise GameError("У тебя уже действует удача сильнее. Потрать её и возвращайся", "CONFLICT")
+            await self.db.run("UPDATE users SET luck_mult = ?, luck_left = ? WHERE id = ?", ev["mult"],
+                              max(ev["spins"], u["luck_left"] if u["luck_mult"] == ev["mult"] else 0), uid)
+            await self._counter(uid, key, 1, day="event")
+            return {"mult": ev["mult"], "spins": ev["spins"]}
+
+    async def luck_event_stats(self) -> dict | None:
+        ev = self.luck_event
+        if not ev:
+            return None
+        claims = await self.db.val("SELECT COUNT(*) FROM counters WHERE key = ? AND day = 'event'",
+                                   f"luck_claim:{ev['id']}")
+        return {**ev, "active": ev["until"] > self.clock(), "claims": claims}
+
+    # ---------- админка ----------
+
+    async def admin_find(self, q: str) -> list[dict]:
+        q = q.strip().lstrip("@")
+        if q.isdigit():
+            rows = await self.db.all("SELECT * FROM users WHERE id = ?", int(q))
+        else:
+            like = f"%{q}%"
+            rows = await self.db.all("SELECT * FROM users WHERE username LIKE ? OR first_name LIKE ? "
+                                     "ORDER BY last_seen DESC LIMIT 30", like, like)
+        return [self._admin_brief(dict(r)) for r in rows]
+
+    def _admin_brief(self, u: dict) -> dict:
+        return {"id": u["id"], "name": u["first_name"] or "Игрок", "username": u["username"],
+                "balance_cents": u["balance_cents"], "level": level_from_xp(u["xp"])[0],
+                "total_spins": u["total_spins"], "created_at": u["created_at"], "last_seen": u["last_seen"],
+                "country": u["country"], "is_blocked": bool(u["is_blocked"])}
+
+    async def admin_recent(self, limit: int = 30) -> list[dict]:
+        rows = await self.db.all("SELECT * FROM users ORDER BY last_seen DESC LIMIT ?", limit)
+        return [self._admin_brief(dict(r)) for r in rows]
+
+    async def admin_user(self, uid: int) -> dict:
+        u = await self._user(uid)
+        items = await self.db.all("SELECT tier, COUNT(*) AS n FROM items WHERE user_id = ? AND state != 'gone' "
+                                  "GROUP BY tier", uid)
+        devs = await self.db.all("SELECT tier, COUNT(*) AS n, SUM(price_cents) AS v FROM devices WHERE user_id = ? "
+                                 "AND state = 'free' GROUP BY tier", uid)
+        ledger = await self.db.all("SELECT currency, delta, reason, created_at FROM ledger WHERE user_id = ? "
+                                   "ORDER BY id DESC LIMIT 15", uid)
+        best = await self.db.one("SELECT * FROM items WHERE user_id = ? AND state != 'gone' ORDER BY tier DESC, id DESC "
+                                 "LIMIT 1", uid)
+        return {
+            **self._admin_brief(u),
+            "attempts": u["attempts"], "xp": u["xp"], "region": u["region"] or u["country"],
+            "luck": {"mult": u["luck_mult"], "spins_left": u["luck_left"]},
+            "boost_min_tier": u["boost_min_tier"],
+            "vip_until": u["vip_until"] if self._vip(u) else None,
+            "ref_count": u["ref_count"], "ref_id": u["ref_id"],
+            "items": {r["tier"]: r["n"] for r in items},
+            "devices": {r["tier"]: r["n"] for r in devs},
+            "value_cents": await self._collection_value(uid) + sum(r["v"] for r in devs),
+            "best": (await self._views([best]))[0] if best else None,
+            "stars": await self.db.val("SELECT SUM(stars) FROM payments WHERE user_id = ? AND refunded = 0", uid),
+            "ledger": [dict(r) for r in ledger],
+        }
+
+    async def admin_give(self, uid: int, cents: int = 0, attempts: int = 0) -> None:
+        async with self.db.tx():
+            u = await self._user(uid)
+            if u["balance_cents"] + int(cents) < 0 or u["attempts"] + int(attempts) < 0:
+                raise GameError("Баланс не может уйти в минус")
+            await self._add(uid, int(cents), int(attempts), "admin")
+
+    async def admin_set_luck(self, uid: int, mult: float, spins: int) -> dict:
+        """Подкрутка: удача на N спинов Обычной и кейса «Телефоны» (шансы броска сохраняются в истории)."""
+        mult, spins = float(mult), int(spins)
+        if not 1 <= mult <= 10 or not 0 <= spins <= 1000:
+            raise GameError("Удача от ×1 до ×10, спинов от 0 до 1000")
+        async with self.db.tx():
+            await self._user(uid)
+            await self.db.run("UPDATE users SET luck_mult = ?, luck_left = ? WHERE id = ?", mult, spins, uid)
+        return {"mult": mult, "spins_left": spins}
+
+    async def admin_set_boost(self, uid: int, min_tier: int | None) -> dict:
+        """Подкрутка: первый дроп следующей крутки (любой уровень или кейс) не ниже ступени."""
+        if min_tier is not None and not COMMON <= int(min_tier) <= SECRET:
+            raise GameError("Ступень от Обычного до Секретного")
+        async with self.db.tx():
+            await self._user(uid)
+            await self.db.run("UPDATE users SET boost_min_tier = ? WHERE id = ?",
+                              None if min_tier is None else int(min_tier), uid)
+        return {"boost_min_tier": min_tier}
+
+    async def admin_series(self, days: int = 14) -> list[dict]:
+        """По дням (МСК): новые игроки, игроки со спином, спины, звёзды."""
+        now = self.clock()
+        start = day_start(now) - (days - 1) * 86400
+        shift = "'+3 hours'"
+
+        async def by_day(sql: str, *args) -> dict:
+            return {r[0]: r[1] for r in await self.db.all(sql, *args)}
+        new = await by_day(f"SELECT date(created_at, 'unixepoch', {shift}) d, COUNT(*) FROM users "
+                           "WHERE created_at >= ? GROUP BY d", start)
+        spins = await by_day(f"SELECT date(created_at, 'unixepoch', {shift}) d, COUNT(*) FROM drops "
+                             "WHERE action IN ('spin', 'case') AND created_at >= ? GROUP BY d", start)
+        active = await by_day(f"SELECT date(created_at, 'unixepoch', {shift}) d, COUNT(DISTINCT user_id) FROM drops "
+                              "WHERE created_at >= ? GROUP BY d", start)
+        stars = await by_day(f"SELECT date(created_at, 'unixepoch', {shift}) d, SUM(stars) FROM payments "
+                             "WHERE refunded = 0 AND created_at >= ? GROUP BY d", start)
+        out = []
+        for i in range(days):
+            d = day_key(start + i * 86400 + 3600)
+            out.append({"day": d, "new": new.get(d, 0), "active": active.get(d, 0), "spins": spins.get(d, 0),
+                        "stars": stars.get(d, 0) or 0})
         return out
 
     # ---------- фоновые задачи ----------

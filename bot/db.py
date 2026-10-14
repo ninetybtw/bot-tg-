@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS users (
     vip_day            TEXT,
     starter_used       INTEGER NOT NULL DEFAULT 0,
     start_pack         INTEGER NOT NULL DEFAULT 0,
-    is_blocked         INTEGER NOT NULL DEFAULT 0
+    is_blocked         INTEGER NOT NULL DEFAULT 0,
+    region             TEXT,                       -- страна номеров (меняется в любой момент), пусто — как country
+    boost_min_tier     INTEGER                     -- подкрутка админа: следующий дроп не ниже этой ступени
 );
 CREATE INDEX IF NOT EXISTS idx_users_ref ON users(ref_id);
 
@@ -98,6 +100,7 @@ CREATE TABLE IF NOT EXISTS drops (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id       INTEGER NOT NULL,
     item_id       INTEGER NOT NULL,
+    kind          TEXT NOT NULL DEFAULT 'number',  -- number | device
     action        TEXT NOT NULL,      -- spin | contract | upgrade | wheel | raffle
     level         TEXT,
     tier          INTEGER NOT NULL,
@@ -134,8 +137,25 @@ CREATE TABLE IF NOT EXISTS sales (
     amount_cents  INTEGER NOT NULL,
     created_at    REAL NOT NULL,
     undo_until    REAL NOT NULL,
-    undone        INTEGER NOT NULL DEFAULT 0
+    undone        INTEGER NOT NULL DEFAULT 0,
+    kind          TEXT NOT NULL DEFAULT 'number'
 );
+
+-- Телефоны из кейса «Телефоны»: модель из каталога bot/game/devices.py
+CREATE TABLE IF NOT EXISTS devices (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    model       TEXT NOT NULL,
+    tier        INTEGER NOT NULL,
+    price_cents INTEGER NOT NULL,
+    source      TEXT NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'free',   -- free | gone
+    gone_reason TEXT,
+    locked      INTEGER NOT NULL DEFAULT 0,
+    is_new      INTEGER NOT NULL DEFAULT 1,
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id, state);
 
 CREATE TABLE IF NOT EXISTS lots (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,6 +223,14 @@ CREATE TRIGGER IF NOT EXISTS drops_append_only_d BEFORE DELETE ON drops
 BEGIN SELECT RAISE(ABORT, 'drops только дописывается'); END;
 """
 
+# Колонки, добавленные после первого запуска: старые базы получают их через ALTER TABLE
+MIGRATIONS = [
+    ("users", "region", "TEXT"),
+    ("users", "boost_min_tier", "INTEGER"),
+    ("drops", "kind", "TEXT NOT NULL DEFAULT 'number'"),
+    ("sales", "kind", "TEXT NOT NULL DEFAULT 'number'"),
+]
+
 
 class Database:
     def __init__(self, path: str):
@@ -219,6 +247,10 @@ class Database:
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.executescript(SCHEMA)
+        for table, column, decl in MIGRATIONS:
+            cols = {r[1] for r in await self.all(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         await self.conn.commit()
 
     async def close(self) -> None:
