@@ -60,7 +60,7 @@ label.f { display: flex; flex-direction: column; gap: 4px; font: 700 11.5px var(
 input, select, textarea { width: 100%; background: var(--bg2); border: 1px solid var(--line2); border-radius: 11px; padding: 9px 11px; outline: none; font-weight: 600; }
 textarea { min-height: 110px; resize: vertical; }
 input:focus, select:focus, textarea:focus { border-color: var(--neon); box-shadow: 0 0 0 3px var(--neon-dim); }
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 14px; border-radius: 12px;
+.btn { text-decoration: none; color: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 14px; border-radius: 12px;
   background: var(--panel2); border: 1px solid var(--line2); font: 800 13px var(--body); white-space: nowrap; }
 .btn.primary { background: var(--neon); color: var(--neon-ink); border-color: transparent; }
 .btn.danger { background: rgba(255, 93, 108, .14); color: var(--danger); border-color: rgba(255, 93, 108, .4); }

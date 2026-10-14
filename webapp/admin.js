@@ -48,7 +48,7 @@
   const tierName = i => { const t = (st.ov && st.ov.tiers || window.DEMO_CONFIG && DEMO_CONFIG.tiers || [])[i]; return t ? `${t.icon} ${t.name}` : `#${i}`; };
 
   function frame(inner) {
-    root.innerHTML = `<div class="head"><h1>ДОЗВ<i>ОН</i> · админка</h1>${MODE === "demo" ? '<span class="demo">демо</span>' : ""}
+    root.innerHTML = `<div class="head"><a class="btn sm" href="${MODE === "demo" ? "./" : "/"}" aria-label="Вернуться в игру">← Игра</a><h1>ДОЗВ<i>ОН</i> · админка</h1>${MODE === "demo" ? '<span class="demo">демо</span>' : ""}
       <span class="who">${MODE === "key" ? "вход по ключу" : MODE === "tma" ? "вход через Telegram" : MODE === "demo" ? "данные демо-игры" : ""}</span>
       <button class="btn sm" data-act="reload" aria-label="Обновить">↻</button></div>
       <nav class="tabs">${TABS.map(([k, t]) => `<button class="${st.tab === k ? "on" : ""}" data-act="tab" data-v="${k}">${t}</button>`).join("")}</nav>
